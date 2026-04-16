@@ -5,6 +5,7 @@
 define(['N/search', 'N/https', 'N/record'], function (search, https, record) {
 
     var SEARCH_ID = 'customsearch_also_sales_order_details';
+  //Testing
 
     var STATUS_READY_TO_SEND = '1';
     var STATUS_SENT = '2';
