@@ -4,8 +4,8 @@
  */
 define(['N/file', 'N/search', 'N/runtime', 'N/record', 'N/https'], function (file, search, runtime, record, https) {
 
-    var PROCESSED_FOLDER_ID = 22665;
-    var ERROR_FOLDER_ID = 22666; //test
+    var PROCESSED_FOLDER_ID = 23781;
+    var ERROR_FOLDER_ID = 23782; //test
 
     var IF_PAYLOAD_FIELD = 'custbody_fulfilled_order_number';
     var IF_LINE_MATCH_FIELD = 'custcol_3pl_fulfillment_key';
