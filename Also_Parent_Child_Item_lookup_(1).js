@@ -19,6 +19,9 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var TYPE_ADDON = '3';
     var TYPE_MERCH = '4';
 
+    // merch list value
+    var MERCH_OFF_BIKE_VALUE = '2';
+
     function afterSubmit(context) {
         try {
             if (context.type !== context.UserEventType.CREATE &&
@@ -357,7 +360,7 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
             filters: [
                 ['internalid', 'anyof', itemIds],
                 'AND',
-                [MERCH_ITEM_FIELD, 'is', 'T']
+                [MERCH_ITEM_FIELD, 'anyof', MERCH_OFF_BIKE_VALUE]
             ],
             columns: [
                 'internalid'
