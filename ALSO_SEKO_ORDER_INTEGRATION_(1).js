@@ -4,7 +4,7 @@
  */
 define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
-    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_stat_2'; //Working With ADDON loic
+    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_stat_2';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
@@ -16,6 +16,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var PC_PARENT = '1';
     var PC_COMPONENT = '2';
     var PC_ADDON = '3';
+    var PC_MERCH = '4'; // update later with actual custom list value
 
     var STATUS_READY = '1';              // Ready To Send
     var STATUS_SENT = '2';               // Sent
@@ -98,10 +99,12 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
             var parentGroups = {};
             var addonLines = [];
+            var merchLines = [];
             var targetByLineKey = {};
             var protectedByLineKey = {};
             var minCommittedByParentItem = {};
             var eligibleLineByLineKey = {};
+            var countForHeaderByLineKey = {};
             var allowAddonStatusUpdate = false;
             var lineCount = soRec.getLineCount({ sublistId: 'item' });
             var i = 0;
@@ -220,6 +223,9 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
                 } else if (parentComp === PC_ADDON) {
                     addonLines.push(lineObj);
+
+                } else if (parentComp === PC_MERCH) {
+                    merchLines.push(lineObj);
                 }
             }
 
@@ -267,12 +273,16 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     if (groupTarget) {
                         for (c = 0; c < grp.parentLines.length; c++) {
                             targetByLineKey[String(grp.parentLines[c].lineUniqueKey)] = groupTarget;
+                            countForHeaderByLineKey[String(grp.parentLines[c].lineUniqueKey)] = true;
                         }
                         for (c = 0; c < grp.componentLines.length; c++) {
                             targetByLineKey[String(grp.componentLines[c].lineUniqueKey)] = groupTarget;
+                            countForHeaderByLineKey[String(grp.componentLines[c].lineUniqueKey)] = true;
                         }
                     } else {
                         for (c = 0; c < grp.parentLines.length; c++) {
+                            countForHeaderByLineKey[String(grp.parentLines[c].lineUniqueKey)] = true;
+
                             if (
                                 String(grp.parentLines[c].lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
                                 String(grp.parentLines[c].lineStatus || '') === STATUS_PARTIAL_SENT
@@ -280,7 +290,10 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                                 targetByLineKey[String(grp.parentLines[c].lineUniqueKey)] = String(grp.parentLines[c].lineStatus || '');
                             }
                         }
+
                         for (c = 0; c < grp.componentLines.length; c++) {
+                            countForHeaderByLineKey[String(grp.componentLines[c].lineUniqueKey)] = true;
+
                             if (
                                 String(grp.componentLines[c].lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
                                 String(grp.componentLines[c].lineStatus || '') === STATUS_PARTIAL_SENT
@@ -296,18 +309,19 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     }
 
                     for (c = 0; c < grp.parentLines.length; c++) {
+                        countForHeaderByLineKey[String(grp.parentLines[c].lineUniqueKey)] = true;
+
                         var parentLine = grp.parentLines[c];
                         if (
                             String(parentLine.lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
                             String(parentLine.lineStatus || '') === STATUS_PARTIAL_SENT
                         ) {
                             targetByLineKey[String(parentLine.lineUniqueKey)] = String(parentLine.lineStatus || '');
-                        } else {
-                            targetByLineKey[String(parentLine.lineUniqueKey)] = '';
                         }
                     }
 
                     for (c = 0; c < grp.componentLines.length; c++) {
+                        countForHeaderByLineKey[String(grp.componentLines[c].lineUniqueKey)] = true;
                         targetByLineKey[String(grp.componentLines[c].lineUniqueKey)] = getRegularTarget(grp.componentLines[c]);
                     }
                 }
@@ -315,16 +329,23 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
             if (allowAddonStatusUpdate) {
                 for (i = 0; i < addonLines.length; i++) {
-                    var singleLine = addonLines[i];
-                    targetByLineKey[String(singleLine.lineUniqueKey)] = getRegularTarget(singleLine);
+                    var singleAddonLine = addonLines[i];
+                    targetByLineKey[String(singleAddonLine.lineUniqueKey)] = getRegularTarget(singleAddonLine);
+                    countForHeaderByLineKey[String(singleAddonLine.lineUniqueKey)] = true;
                 }
+            }
+
+            for (i = 0; i < merchLines.length; i++) {
+                var merchLine = merchLines[i];
+                targetByLineKey[String(merchLine.lineUniqueKey)] = getRegularTarget(merchLine);
+                countForHeaderByLineKey[String(merchLine.lineUniqueKey)] = true;
             }
 
             var changed = false;
             var hasReady = false;
             var hasPartial = false;
             var hasBlankCounted = false;
-            var hasEligibleLines = false;
+            var hasCountedLines = false;
             var lineNum = 0;
 
             for (lineNum = 0; lineNum < lineCount; lineNum++) {
@@ -337,8 +358,6 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                 if (!eligibleLineByLineKey[luk]) {
                     continue;
                 }
-
-                hasEligibleLines = true;
 
                 var currentLineStatus = String(soRec.getSublistValue({
                     sublistId: 'item',
@@ -404,11 +423,10 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     continue;
                 }
 
-                if (!targetByLineKey.hasOwnProperty(luk)) {
-                    continue;
+                var target = '';
+                if (targetByLineKey.hasOwnProperty(luk)) {
+                    target = String(targetByLineKey[luk] || '');
                 }
-
-                var target = String(targetByLineKey[luk] || '');
 
                 if (currentLineStatus !== target) {
                     soRec.setSublistValue({
@@ -420,18 +438,22 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     changed = true;
                 }
 
-                if (target === STATUS_READY) {
-                    hasReady = true;
-                } else if (target === STATUS_PARTIAL_READY) {
-                    hasPartial = true;
-                } else {
-                    hasBlankCounted = true;
+                if (countForHeaderByLineKey[luk]) {
+                    hasCountedLines = true;
+
+                    if (target === STATUS_READY) {
+                        hasReady = true;
+                    } else if (target === STATUS_PARTIAL_READY) {
+                        hasPartial = true;
+                    } else {
+                        hasBlankCounted = true;
+                    }
                 }
             }
 
             var newBodyStatus = '';
 
-            if (!hasEligibleLines) {
+            if (!hasCountedLines) {
                 newBodyStatus = '';
             } else if (hasReady && !hasPartial && !hasBlankCounted) {
                 newBodyStatus = STATUS_READY;
