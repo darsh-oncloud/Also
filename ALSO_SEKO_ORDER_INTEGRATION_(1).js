@@ -28,7 +28,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var STATUS_PARTIAL_FULFILLED = '8';  // Partially Fulfilled
     var STATUS_HOLD = '9';               // Hold
 
-    var SEKO_LOCATION_ID = '16';
+    var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
 
     function getInputData() {
