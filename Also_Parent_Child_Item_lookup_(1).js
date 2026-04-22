@@ -4,7 +4,7 @@
  */
 define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
-    var ITEM_SUBLIST = 'item'; 
+    var ITEM_SUBLIST = 'item';
 
     // update these ids if needed
     var PARENT_COLUMN_FIELD = 'custcol_parent_item';
@@ -19,7 +19,8 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var TYPE_ADDON = '3';
     var TYPE_MERCH = '4';
 
-    // merch list value
+    // merch list values
+    var MERCH_ON_BIKE_VALUE = '1';
     var MERCH_OFF_BIKE_VALUE = '2';
 
     function afterSubmit(context) {
@@ -29,126 +30,105 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 return;
             }
 
-            var poId = context.newRecord.id;
+            var tranId = context.newRecord.id;
             var recType = context.newRecord.type;
-            if (!poId) return;
+            if (!tranId) return;
 
-            if (recType == 'purchaseorder') {
-              log.debug('START', 'PO Id: ' + poId);
+            if (recType === 'purchaseorder') {
+                log.debug('START', 'PO Id: ' + tranId);
 
-            var approvalStatus = context.newRecord.getValue({ fieldId: 'approvalstatus' });
-            var vendorId = context.newRecord.getValue({ fieldId: 'entity' });
+                var approvalStatus = context.newRecord.getValue({ fieldId: 'approvalstatus' });
+                var vendorId = context.newRecord.getValue({ fieldId: 'entity' });
 
-            log.debug('PO Header', {
-                poId: poId,
-                approvalStatus: approvalStatus,
-                vendorId: vendorId
-            });
+                log.debug('PO Header', {
+                    poId: tranId,
+                    approvalStatus: approvalStatus,
+                    vendorId: vendorId
+                });
 
-            if (String(approvalStatus) !== '1') {
-                log.debug('STOP', 'PO is not Pending Approval');
+                if (String(approvalStatus) !== '1') {
+                    log.debug('STOP', 'PO is not Pending Approval');
+                    return;
+                }
+
+                if (!vendorId) {
+                    log.debug('STOP', 'Vendor not found');
+                    return;
+                }
+
+                var vendorLookup = search.lookupFields({
+                    type: search.Type.VENDOR,
+                    id: vendorId,
+                    columns: [SPECIAL_VENDOR_FIELD]
+                });
+
+                var isSpecialVendor = vendorLookup[SPECIAL_VENDOR_FIELD] === true;
+
+                log.debug('Vendor Check', {
+                    vendorId: vendorId,
+                    isSpecialVendor: isSpecialVendor
+                });
+
+                if (!isSpecialVendor) {
+                    log.debug('STOP', 'Vendor special order checkbox is not checked');
+                    return;
+                }
+
+            } else if (recType === 'salesorder') {
+                log.debug('START', 'SO Id: ' + tranId);
+
+                var soStatus = context.newRecord.getValue({ fieldId: 'orderstatus' });
+
+                log.debug('SO Header', {
+                    soId: tranId,
+                    approvalStatus: soStatus
+                });
+
+                if (String(soStatus) !== 'A') {
+                    log.debug('STOP', 'SO is not Pending Approval');
+                    // return;
+                }
+            } else {
                 return;
             }
 
-            if (!vendorId) {
-                log.debug('STOP', 'Vendor not found');
+            var tranRec = record.load({
+                type: recType,
+                id: tranId,
+                isDynamic: false
+            });
+
+            var lineItems = getLineItems(tranRec);
+            if (!lineItems.length) {
+                log.debug('STOP', 'No item lines found');
                 return;
             }
 
-            var vendorLookup = search.lookupFields({
-                type: search.Type.VENDOR,
-                id: vendorId,
-                columns: [SPECIAL_VENDOR_FIELD]
-            });
+            var parentChildJson = getParentChildJson(lineItems);
+            log.debug('Parent Child JSON', JSON.stringify(parentChildJson));
 
-            var isSpecialVendor = vendorLookup[SPECIAL_VENDOR_FIELD] === true;
+            var itemMerchJson = getItemMerchJson(lineItems);
+            log.debug('Item Merch JSON', JSON.stringify(itemMerchJson));
 
-            log.debug('Vendor Check', {
-                vendorId: vendorId,
-                isSpecialVendor: isSpecialVendor
-            });
-
-            if (!isSpecialVendor) {
-                log.debug('STOP', 'Vendor special order checkbox is not checked');
+            if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
+                log.debug('STOP', 'No parent-child setup and no merch/onbike-offbike items found');
                 return;
             }
-            }
-            else if (recType == 'salesorder') {
-              log.debug('START', 'SO Id: ' + poId);
 
-            var approvalStatus = context.newRecord.getValue({ fieldId: 'orderstatus' });
-
-            log.debug('PO Header', {
-                soId: poId,
-                approvalStatus: approvalStatus
-            });
-
-            if (String(approvalStatus) != 'A') {
-                log.debug('STOP', 'SO is not Pending Approval');
-//                return;
-            }
-            }
-
-            // var poLineItems = getPoLineItems(context.newRecord);
-            // if (!poLineItems.length) {
-            //     log.debug('STOP', 'No item lines found');
-            //     return;
-            // }
-
-            // var parentChildJson = getParentChildJson(poLineItems);
-            // log.debug('Parent Child JSON', JSON.stringify(parentChildJson));
-
-            // var merchItemJson = getMerchItemJson(poLineItems);
-            // log.debug('Merch Item JSON', JSON.stringify(merchItemJson));
-
-            // if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
-            //     log.debug('STOP', 'No parent-child setup found');
-            //     return;
-            // }
-
-            // var poRec = record.load({
-            //     type: recType,
-            //     id: poId,
-            //     isDynamic: false
-            // });
-
-var poRec = record.load({
-    type: recType,
-    id: poId,
-    isDynamic: false
-});
-
-var poLineItems = getPoLineItems(poRec);
-if (!poLineItems.length) {
-    log.debug('STOP', 'No item lines found');
-    return;
-}
-
-var parentChildJson = getParentChildJson(poLineItems);
-log.debug('Parent Child JSON', JSON.stringify(parentChildJson));
-
-var merchItemJson = getMerchItemJson(poLineItems);
-log.debug('Merch Item JSON', JSON.stringify(merchItemJson));
-
-if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
-    log.debug('STOP', 'No parent-child setup found');
-    return;
-}
-          
-            var lineCount = poRec.getLineCount({ sublistId: ITEM_SUBLIST });
+            var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
             var currentParent = '';
             var usedChildMap = {};
             var hasChanges = false;
             var i;
 
             for (i = 0; i < lineCount; i++) {
-                var lineItemId = poRec.getSublistValue({
+                var lineItemId = tranRec.getSublistValue({
                     sublistId: ITEM_SUBLIST,
                     fieldId: 'item',
                     line: i
                 });
 
-                var lineRate = poRec.getSublistValue({
+                var lineRate = tranRec.getSublistValue({
                     sublistId: ITEM_SUBLIST,
                     fieldId: 'rate',
                     line: i
@@ -171,29 +151,13 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
                     continue;
                 }
 
-                if (merchItemJson[lineItemId]) {
-                    currentParent = '';
-                    usedChildMap = {};
-
-                    clearParentField(poRec, i);
-                    setTypeField(poRec, i, TYPE_MERCH);
-                    hasChanges = true;
-
-                    log.debug('MERCH FOUND', {
-                        line: i,
-                        itemId: lineItemId
-                    });
-
-                    continue;
-                }
-
                 // parent line = item exists in json key and rate = 0
                 if (parentChildJson[lineItemId] && lineRate === 0) {
                     currentParent = lineItemId;
                     usedChildMap = {};
 
-                    clearParentField(poRec, i);
-                    setTypeField(poRec, i, TYPE_PARENT);
+                    clearParentField(tranRec, i);
+                    setTypeField(tranRec, i, TYPE_PARENT);
                     hasChanges = true;
 
                     log.debug('PARENT FOUND', {
@@ -210,32 +174,32 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
                         lineRate > 0;
 
                     if (isValidChild) {
-                        // same child repeated again = separate addon item
+                        // same child repeated again = no longer component, classify by merch field
                         if (usedChildMap[lineItemId]) {
                             currentParent = '';
                             usedChildMap = {};
 
-                            clearParentField(poRec, i);
-                            setTypeField(poRec, i, TYPE_ADDON);
+                            clearParentField(tranRec, i);
+                            setTypeByMerchField(tranRec, i, lineItemId, itemMerchJson);
                             hasChanges = true;
 
-                            log.debug('ADDON FOUND', {
+                            log.debug('REPEATED CHILD CLASSIFIED', {
                                 line: i,
                                 itemId: lineItemId,
-                                reason: 'Same child repeated under same parent block'
+                                merchValue: itemMerchJson[lineItemId] || ''
                             });
 
                             continue;
                         }
 
-                        poRec.setSublistValue({
+                        tranRec.setSublistValue({
                             sublistId: ITEM_SUBLIST,
                             fieldId: PARENT_COLUMN_FIELD,
                             line: i,
                             value: currentParent
                         });
 
-                        setTypeField(poRec, i, TYPE_COMPONENT);
+                        setTypeField(tranRec, i, TYPE_COMPONENT);
 
                         usedChildMap[lineItemId] = true;
                         hasChanges = true;
@@ -249,36 +213,36 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
                         continue;
                     }
 
-                    // not a valid child for current parent = separate/addon
+                    // not a valid child for current parent
                     currentParent = '';
                     usedChildMap = {};
 
-                    clearParentField(poRec, i);
-                    setTypeField(poRec, i, TYPE_ADDON);
+                    clearParentField(tranRec, i);
+                    setTypeByMerchField(tranRec, i, lineItemId, itemMerchJson);
                     hasChanges = true;
 
-                    log.debug('SEPARATE ITEM FOUND', {
+                    log.debug('SEPARATE ITEM CLASSIFIED', {
                         line: i,
                         itemId: lineItemId,
-                        reason: 'Not a valid child for current parent'
+                        merchValue: itemMerchJson[lineItemId] || ''
                     });
 
                     continue;
                 }
 
-                // normal separate/addon item
-                clearParentField(poRec, i);
-                setTypeField(poRec, i, TYPE_ADDON);
+                // normal separate line
+                clearParentField(tranRec, i);
+                setTypeByMerchField(tranRec, i, lineItemId, itemMerchJson);
                 hasChanges = true;
             }
 
             if (hasChanges) {
-                var savedId = poRec.save({
+                var savedId = tranRec.save({
                     enableSourcing: false,
                     ignoreMandatoryFields: true
                 });
 
-                log.audit('PO SAVED', 'PO updated successfully: ' + savedId);
+                log.audit('TRANSACTION SAVED', recType + ' updated successfully: ' + savedId);
             } else {
                 log.debug('NO CHANGES', 'No child line needed update');
             }
@@ -291,14 +255,14 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
         }
     }
 
-    function getPoLineItems(poRec) {
+    function getLineItems(tranRec) {
         var arr = [];
         var itemMap = {};
-        var lineCount = poRec.getLineCount({ sublistId: ITEM_SUBLIST });
+        var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
         var i;
 
         for (i = 0; i < lineCount; i++) {
-            var itemId = poRec.getSublistValue({
+            var itemId = tranRec.getSublistValue({
                 sublistId: ITEM_SUBLIST,
                 fieldId: 'item',
                 line: i
@@ -313,7 +277,7 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
             arr.push(key);
         }
 
-        log.debug('PO Unique Items', JSON.stringify(arr));
+        log.debug('Unique Items', JSON.stringify(arr));
         return arr;
     }
 
@@ -352,25 +316,27 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
         return json;
     }
 
-    function getMerchItemJson(itemIds) {
+    function getItemMerchJson(itemIds) {
         var json = {};
 
         search.create({
             type: search.Type.ITEM,
             filters: [
-                ['internalid', 'anyof', itemIds],
-                'AND',
-                [MERCH_ITEM_FIELD, 'anyof', MERCH_OFF_BIKE_VALUE]
+                ['internalid', 'anyof', itemIds]
             ],
             columns: [
-                'internalid'
+                'internalid',
+                MERCH_ITEM_FIELD
             ]
         }).run().each(function(result) {
             var itemId = result.getValue({ name: 'internalid' });
+            var merchValue = result.getValue({ name: MERCH_ITEM_FIELD });
+
             itemId = itemId ? String(itemId) : '';
+            merchValue = merchValue ? String(merchValue) : '';
 
             if (itemId) {
-                json[itemId] = true;
+                json[itemId] = merchValue;
             }
 
             return true;
@@ -396,9 +362,21 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
         return obj;
     }
 
-    function clearParentField(poRec, line) {
+    function setTypeByMerchField(tranRec, line, itemId, itemMerchJson) {
+        var merchValue = itemMerchJson[itemId] || '';
+
+        if (merchValue === MERCH_ON_BIKE_VALUE) {
+            setTypeField(tranRec, line, TYPE_ADDON);
+        } else if (merchValue === MERCH_OFF_BIKE_VALUE) {
+            setTypeField(tranRec, line, TYPE_MERCH);
+        } else {
+            clearTypeField(tranRec, line);
+        }
+    }
+
+    function clearParentField(tranRec, line) {
         try {
-            poRec.setSublistValue({
+            tranRec.setSublistValue({
                 sublistId: ITEM_SUBLIST,
                 fieldId: PARENT_COLUMN_FIELD,
                 line: line,
@@ -407,9 +385,20 @@ if (!hasKeys(parentChildJson) && !hasKeys(merchItemJson)) {
         } catch (e) {}
     }
 
-    function setTypeField(poRec, line, value) {
+    function clearTypeField(tranRec, line) {
         try {
-            poRec.setSublistValue({
+            tranRec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: line,
+                value: ''
+            });
+        } catch (e) {}
+    }
+
+    function setTypeField(tranRec, line, value) {
+        try {
+            tranRec.setSublistValue({
                 sublistId: ITEM_SUBLIST,
                 fieldId: TYPE_COLUMN_FIELD,
                 line: line,
