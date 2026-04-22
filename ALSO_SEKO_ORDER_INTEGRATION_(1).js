@@ -21,13 +21,13 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var STATUS_SENT = '2';               // Sent
     var STATUS_ERROR = '3';              // Error
     var STATUS_NOT_RELEASED = '4';       // Not Released
-    var STATUS_PARTIAL_READY = '5';      // Partially Ready
-    var STATUS_PARTIAL_SENT = '6';       // Partially Sent
-    var STATUS_FULFILLED = '7';          // Fulfilled
-    var STATUS_PARTIAL_FULFILLED = '8';  // Partially Fulfilled
-    var STATUS_HOLD = '9';               // Hold
+    var STATUS_PARTIAL_READY = '6';      // Partially Ready
+    var STATUS_PARTIAL_SENT = '7';       // Partially Sent
+    var STATUS_FULFILLED = '8';          // Fulfilled
+    var STATUS_PARTIAL_FULFILLED = '9';  // Partially Fulfilled
+    var STATUS_HOLD = '10';               // Hold
 
-    var SEKO_LOCATION_ID = '16';
+    var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
 
     function getInputData() {
