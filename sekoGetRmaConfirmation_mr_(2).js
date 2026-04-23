@@ -310,7 +310,7 @@ function (search, runtime, record, https) {
                         });
                         log.debug('quantity set success', responseQty);
 
-                        itemReceipt.setCurrentSublistValue({
+                     /*   itemReceipt.setCurrentSublistValue({
                             sublistId: 'item',
                             fieldId: 'location',
                             value: 16
@@ -319,8 +319,46 @@ function (search, runtime, record, https) {
 
                         itemReceipt.commitLine({
                             sublistId: 'item'
-                        });
-                        log.debug('commitLine success', i);
+                        }); 
+                        log.debug('commitLine success', i); */
+
+itemReceipt.setCurrentSublistValue({
+    sublistId: 'item',
+    fieldId: 'location',
+    value: 7
+});
+log.debug('location set success', 7);
+
+// Add Inventory Detail with Damaged status
+var invDetail = itemReceipt.getCurrentSublistSubrecord({
+    sublistId: 'item',
+    fieldId: 'inventorydetail'
+});
+
+invDetail.selectNewLine({
+    sublistId: 'inventoryassignment'
+});
+
+invDetail.setCurrentSublistValue({
+    sublistId: 'inventoryassignment',
+    fieldId: 'quantity',
+    value: responseQty
+});
+
+invDetail.setCurrentSublistValue({
+    sublistId: 'inventoryassignment',
+    fieldId: 'inventorystatus',
+    value: 2
+});
+
+invDetail.commitLine({
+    sublistId: 'inventoryassignment'
+});
+
+itemReceipt.commitLine({
+    sublistId: 'item'
+});
+log.debug('commitLine success', i);
 
                         break;
                     } catch (e) {
