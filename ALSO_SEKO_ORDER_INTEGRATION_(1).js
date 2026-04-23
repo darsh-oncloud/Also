@@ -7,7 +7,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
-    var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
+    var LINE_STATUS_FIELD = 'custcola_3pl_export_status';
     var EXPORT_QTY_FIELD = 'custcol_3pl_export_quantity';
 
     var PARENT_COMP_FIELD = 'custcol_item_parentcomp';
@@ -26,7 +26,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var STATUS_PARTIAL_SENT = '7';       // Partially Sent
     var STATUS_FULFILLED = '8';          // Fulfilled
     var STATUS_PARTIAL_FULFILLED = '9';  // Partially Fulfilled
-    var STATUS_HOLD = '10';               // Hold
+    var STATUS_HOLD = '10';              // Hold
 
     var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
@@ -348,6 +348,10 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     continue;
                 }
 
+                if (currentParentComp === PC_ADDON && !allowAddonStatusUpdate) {
+                    continue;
+                }
+
                 var target = '';
                 if (targetByLineKey.hasOwnProperty(luk)) {
                     target = String(targetByLineKey[luk] || '');
@@ -467,12 +471,6 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
         result.minCommitted = Number(minCommitted || 0);
         result.minAvailable = Number(minAvailable || 0);
 
-        /*
-         * Parent/Component business rule:
-         * 1. Every component must have committed > 0, otherwise keep group blank
-         * 2. If committed+fulfilled minimum across components >= parent qty => Ready
-         * 3. Else if committed exists on all components => Partial Ready
-         */
         if (result.minCommitted > 0) {
             if (result.minAvailable >= parentQty) {
                 result.target = STATUS_READY;
