@@ -4,10 +4,10 @@
  */
 define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
-    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
+    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_stat_2';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
-    var LINE_STATUS_FIELD = 'custcola_3pl_export_status';
+    var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
     var EXPORT_QTY_FIELD = 'custcol_3pl_export_quantity';
 
     var PARENT_COMP_FIELD = 'custcol_item_parentcomp';
@@ -18,22 +18,25 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var PC_ADDON = '3';
     var PC_MERCH = '4';
 
-    var STATUS_READY = '1';
-    var STATUS_SENT = '2';
-    var STATUS_ERROR = '3';
-    var STATUS_NOT_RELEASED = '4';
-    var STATUS_PARTIAL_READY = '6';
-    var STATUS_PARTIAL_SENT = '7';
-    var STATUS_FULFILLED = '8';
-    var STATUS_PARTIAL_FULFILLED = '9';
-    var STATUS_HOLD = '10';
+    var STATUS_READY = '1';              // Ready To Send
+    var STATUS_SENT = '2';               // Sent
+    var STATUS_ERROR = '3';              // Error
+    var STATUS_NOT_RELEASED = '4';       // Not Released
+    var STATUS_PARTIAL_READY = '5';      // Partially Ready
+    var STATUS_PARTIAL_SENT = '6';       // Partially Sent
+    var STATUS_FULFILLED = '7';          // Fulfilled
+    var STATUS_PARTIAL_FULFILLED = '8';  // Partially Fulfilled
+    var STATUS_HOLD = '9';               // Hold
 
-    var SEKO_LOCATION_ID = '7';
+    var SEKO_LOCATION_ID = '16';
     var IGNORE_ITEM_ID = '907';
 
     function getInputData() {
         log.audit('getInputData', 'Loading saved search: ' + SAVED_SEARCH_ID);
-        return search.load({ id: SAVED_SEARCH_ID });
+
+        return search.load({
+            id: SAVED_SEARCH_ID
+        });
     }
 
     function map(context) {
@@ -71,7 +74,9 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
         try {
             var soId = context.key;
 
-            log.audit('REDUCE START', { soId: soId });
+            log.audit('REDUCE START', {
+                soId: soId
+            });
 
             var soRec = record.load({
                 type: record.Type.SALES_ORDER,
@@ -343,18 +348,12 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     continue;
                 }
 
-                var skipAddonStatusOverwrite = (currentParentComp === PC_ADDON && !allowAddonStatusUpdate);
-
-                var target = currentLineStatus;
-
-                if (!skipAddonStatusOverwrite) {
-                    target = '';
-                    if (targetByLineKey.hasOwnProperty(luk)) {
-                        target = String(targetByLineKey[luk] || '');
-                    }
+                var target = '';
+                if (targetByLineKey.hasOwnProperty(luk)) {
+                    target = String(targetByLineKey[luk] || '');
                 }
 
-                if (!skipAddonStatusOverwrite && currentLineStatus !== target) {
+                if (currentLineStatus !== target) {
                     soRec.setSublistValue({
                         sublistId: 'item',
                         fieldId: LINE_STATUS_FIELD,
@@ -468,6 +467,12 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
         result.minCommitted = Number(minCommitted || 0);
         result.minAvailable = Number(minAvailable || 0);
 
+        /*
+         * Parent/Component business rule:
+         * 1. Every component must have committed > 0, otherwise keep group blank
+         * 2. If committed+fulfilled minimum across components >= parent qty => Ready
+         * 3. Else if committed exists on all components => Partial Ready
+         */
         if (result.minCommitted > 0) {
             if (result.minAvailable >= parentQty) {
                 result.target = STATUS_READY;
