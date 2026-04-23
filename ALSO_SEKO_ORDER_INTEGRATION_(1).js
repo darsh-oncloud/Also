@@ -18,25 +18,22 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var PC_ADDON = '3';
     var PC_MERCH = '4';
 
-    var STATUS_READY = '1';              // Ready To Send
-    var STATUS_SENT = '2';               // Sent
-    var STATUS_ERROR = '3';              // Error
-    var STATUS_NOT_RELEASED = '4';       // Not Released
-    var STATUS_PARTIAL_READY = '6';      // Partially Ready
-    var STATUS_PARTIAL_SENT = '7';       // Partially Sent
-    var STATUS_FULFILLED = '8';          // Fulfilled
-    var STATUS_PARTIAL_FULFILLED = '9';  // Partially Fulfilled
-    var STATUS_HOLD = '10';              // Hold
+    var STATUS_READY = '1';
+    var STATUS_SENT = '2';
+    var STATUS_ERROR = '3';
+    var STATUS_NOT_RELEASED = '4';
+    var STATUS_PARTIAL_READY = '6';
+    var STATUS_PARTIAL_SENT = '7';
+    var STATUS_FULFILLED = '8';
+    var STATUS_PARTIAL_FULFILLED = '9';
+    var STATUS_HOLD = '10';
 
     var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
 
     function getInputData() {
         log.audit('getInputData', 'Loading saved search: ' + SAVED_SEARCH_ID);
-
-        return search.load({
-            id: SAVED_SEARCH_ID
-        });
+        return search.load({ id: SAVED_SEARCH_ID });
     }
 
     function map(context) {
@@ -74,9 +71,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
         try {
             var soId = context.key;
 
-            log.audit('REDUCE START', {
-                soId: soId
-            });
+            log.audit('REDUCE START', { soId: soId });
 
             var soRec = record.load({
                 type: record.Type.SALES_ORDER,
@@ -348,16 +343,18 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     continue;
                 }
 
-                if (currentParentComp === PC_ADDON && !allowAddonStatusUpdate) {
-                    continue;
+                var skipAddonStatusOverwrite = (currentParentComp === PC_ADDON && !allowAddonStatusUpdate);
+
+                var target = currentLineStatus;
+
+                if (!skipAddonStatusOverwrite) {
+                    target = '';
+                    if (targetByLineKey.hasOwnProperty(luk)) {
+                        target = String(targetByLineKey[luk] || '');
+                    }
                 }
 
-                var target = '';
-                if (targetByLineKey.hasOwnProperty(luk)) {
-                    target = String(targetByLineKey[luk] || '');
-                }
-
-                if (currentLineStatus !== target) {
+                if (!skipAddonStatusOverwrite && currentLineStatus !== target) {
                     soRec.setSublistValue({
                         sublistId: 'item',
                         fieldId: LINE_STATUS_FIELD,
