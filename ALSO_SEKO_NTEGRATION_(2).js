@@ -10,8 +10,8 @@ define(['N/search', 'N/https', 'N/record'], function (search, https, record) {
     var STATUS_READY_TO_SEND = '1';
     var STATUS_SENT = '2';
     var STATUS_ERROR = '3';
-    var STATUS_PARTIALLY_READY = '5';
-    var STATUS_PARTIALLY_SENT = '6';
+    var STATUS_PARTIALLY_READY = '6';
+    var STATUS_PARTIALLY_SENT = '7';
 
     var LINE_UNIQUE_STORE_FIELD = 'custcol_3pl_fulfillment_key';
     var ERROR_FIELD = 'custbody_3pl_error';
