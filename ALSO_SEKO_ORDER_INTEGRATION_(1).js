@@ -2,17 +2,13 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/search', 'N/record', 'N/runtime', 'N/log'], function (search, record, runtime, log) {
+define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
     var LOCATION_ID = 7;
 
     function getInputData() {
-        var searchId = runtime.getCurrentScript().getParameter({
-            name: 'customsearch_also_sales_order_items'
-        });
-
         return search.load({
-            id: searchId
+            id: 'customsearch_also_sales_order_items'
         });
     }
 
