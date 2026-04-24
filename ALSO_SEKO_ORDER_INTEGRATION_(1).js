@@ -8,7 +8,7 @@ define(['N/search', 'N/record', 'N/runtime', 'N/log'], function (search, record,
 
     function getInputData() {
         var searchId = runtime.getCurrentScript().getParameter({
-            name: 'custscript_so_location_search_id'
+            name: 'customsearch_also_sales_order_items'
         });
 
         return search.load({
