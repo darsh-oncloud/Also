@@ -4,7 +4,7 @@
  */
 define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
-    var SAVED_SEARCH_ID = 'customsearch1777052994836';
+    var SAVED_SEARCH_ID = 'customsearch_also_sales_order_items';
     var LOCATION_ID = 7;
 
     function getInputData() {
