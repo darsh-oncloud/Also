@@ -4,7 +4,7 @@
  */
 define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
-    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_stat_2'; //new mech logic
+    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status'; //new mech logic
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
