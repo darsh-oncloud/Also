@@ -4,39 +4,52 @@
  */
 define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
+    var SAVED_SEARCH_ID = 'customsearch_also_sales_order_items';
     var LOCATION_ID = 7;
 
     function getInputData() {
         return search.load({
-            id: 'customsearch_also_sales_order_items'
+            id: SAVED_SEARCH_ID
         });
     }
 
     function map(context) {
         try {
             var result = JSON.parse(context.value);
-            var soId = result.id;
+            var soId = '';
 
-            if (result.values && result.values['GROUP(internalid)']) {
-                soId = result.values['GROUP(internalid)'].value || result.values['GROUP(internalid)'];
+            log.debug('Search Result', result);
+
+            if (result.values) {
+                if (result.values['GROUP(internalid)']) {
+                    soId = result.values['GROUP(internalid)'].value || result.values['GROUP(internalid)'];
+                } else if (result.values.internalid) {
+                    soId = result.values.internalid.value || result.values.internalid;
+                }
             }
 
-            if (soId) {
-                context.write({
-                    key: soId,
-                    value: soId
-                });
+            if (!soId) {
+                log.error('Missing Sales Order Internal ID', result);
+                return;
             }
+
+            context.write({
+                key: soId,
+                value: soId
+            });
 
         } catch (e) {
-            log.error('MAP ERROR', e);
+            log.error('MAP ERROR', {
+                message: e.message,
+                stack: e.stack
+            });
         }
     }
 
     function reduce(context) {
-        try {
-            var soId = context.key;
+        var soId = context.key;
 
+        try {
             var soRec = record.load({
                 type: record.Type.SALES_ORDER,
                 id: soId,
@@ -45,7 +58,11 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
             var changed = false;
 
-            if (Number(soRec.getValue({ fieldId: 'location' })) !== LOCATION_ID) {
+            var bodyLocation = soRec.getValue({
+                fieldId: 'location'
+            });
+
+            if (Number(bodyLocation) !== LOCATION_ID) {
                 soRec.setValue({
                     fieldId: 'location',
                     value: LOCATION_ID
@@ -73,17 +90,20 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     continue;
                 }
 
-                if (Number(soRec.getSublistValue({
+                var lineLocation = soRec.getSublistValue({
                     sublistId: 'item',
                     fieldId: 'location',
                     line: i
-                })) !== LOCATION_ID) {
+                });
+
+                if (Number(lineLocation) !== LOCATION_ID) {
                     soRec.setSublistValue({
                         sublistId: 'item',
                         fieldId: 'location',
                         line: i,
                         value: LOCATION_ID
                     });
+
                     changed = true;
                 }
             }
@@ -98,12 +118,15 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     soId: soId,
                     saveId: saveId
                 });
+            } else {
+                log.debug('No Change Needed', soId);
             }
 
         } catch (e) {
             log.error('REDUCE ERROR', {
-                soId: context.key,
-                message: e.message
+                soId: soId,
+                message: e.message,
+                stack: e.stack
             });
         }
     }
@@ -113,6 +136,22 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
             usage: summary.usage,
             concurrency: summary.concurrency,
             yields: summary.yields
+        });
+
+        summary.mapSummary.errors.iterator().each(function (key, error) {
+            log.error('MAP SUMMARY ERROR', {
+                key: key,
+                error: error
+            });
+            return true;
+        });
+
+        summary.reduceSummary.errors.iterator().each(function (key, error) {
+            log.error('REDUCE SUMMARY ERROR', {
+                key: key,
+                error: error
+            });
+            return true;
         });
     }
 
