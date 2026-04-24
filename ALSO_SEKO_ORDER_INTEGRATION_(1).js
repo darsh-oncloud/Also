@@ -4,7 +4,7 @@
  */
 define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
-    var SAVED_SEARCH_ID = 'customsearch_also_sales_order_items';
+    var SAVED_SEARCH_ID = 'customsearch1777052994836';
     var LOCATION_ID = 7;
 
     function getInputData() {
@@ -18,14 +18,8 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
             var result = JSON.parse(context.value);
             var soId = '';
 
-            log.debug('Search Result', result);
-
-            if (result.values) {
-                if (result.values['GROUP(internalid)']) {
-                    soId = result.values['GROUP(internalid)'].value || result.values['GROUP(internalid)'];
-                } else if (result.values.internalid) {
-                    soId = result.values.internalid.value || result.values.internalid;
-                }
+            if (result.values && result.values['GROUP(internalid)']) {
+                soId = result.values['GROUP(internalid)'].value || result.values['GROUP(internalid)'];
             }
 
             if (!soId) {
@@ -58,11 +52,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
             var changed = false;
 
-            var bodyLocation = soRec.getValue({
-                fieldId: 'location'
-            });
-
-            if (Number(bodyLocation) !== LOCATION_ID) {
+            if (Number(soRec.getValue({ fieldId: 'location' })) !== LOCATION_ID) {
                 soRec.setValue({
                     fieldId: 'location',
                     value: LOCATION_ID
