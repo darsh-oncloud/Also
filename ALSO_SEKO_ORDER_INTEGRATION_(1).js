@@ -2,9 +2,9 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
+define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record, log, runtime) {
 
-    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
+    // var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
