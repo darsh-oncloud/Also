@@ -2,10 +2,10 @@
  * @NApiVersion 2.x
  * @NScriptType MapReduceScript
  */
-define(['N/search', 'N/https', 'N/record'], function (search, https, record) {
+define(['N/search', 'N/https', 'N/record', 'N/runtime'], function (search, https, record, runtime) {
 
-    var SEARCH_ID = 'customsearch_also_slaes_order_3pl_stat_2';
-  //Testing
+    var SEARCH_ID = '';
+
 
     var STATUS_READY_TO_SEND = '1';
     var STATUS_SENT = '2';
@@ -22,6 +22,11 @@ define(['N/search', 'N/https', 'N/record'], function (search, https, record) {
     var TYPE_FIELD = 'custcol_item_parentcomp';
 
     function getInputData() {
+
+        SEARCH_ID = runtime.getCurrentScript().getParameter({
+          name: 'custscript_seko_saved_search'
+        });
+      
         var rows = [];
         var soSearch = search.load({ id: SEARCH_ID });
         var pagedData = soSearch.runPaged({ pageSize: 1000 });
