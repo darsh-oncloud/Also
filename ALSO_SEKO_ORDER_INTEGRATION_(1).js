@@ -5,6 +5,9 @@
 define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record, log, runtime) {
 
     // var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
+    var SAVED_SEARCH_ID = runtime.getCurrentScript().getParameter({
+        name: 'custscript_3pl_saved_search'
+    });
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
