@@ -17,9 +17,9 @@ define(['N/file', 'N/search', 'N/runtime', 'N/record', 'N/https'], function (fil
     var PARENT_ITEM_FIELD = 'custcol_parent_item';
 
     var STATUS_SENT = '2';
-    var STATUS_PARTIALLY_SENT = '6';
-    var STATUS_FULFILLED = '7';
-    var STATUS_PARTIALLY_FULFILLED = '8';
+    var STATUS_PARTIALLY_SENT = '7';
+    var STATUS_FULFILLED = '8';
+    var STATUS_PARTIALLY_FULFILLED = '9';
 
     function getInputData() {
         var resultsArray = [];
