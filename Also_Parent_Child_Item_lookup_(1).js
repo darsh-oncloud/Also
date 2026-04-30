@@ -86,8 +86,10 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                 if (String(soStatus) !== 'A') {
                     log.debug('STOP', 'SO is not Pending Approval');
+                    // kept as it was in your working script
                     // return;
                 }
+
             } else {
                 return;
             }
@@ -116,66 +118,142 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             }
 
             var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
-            var parentLineMap = {};
-            var childParentMap = {};
+            var parentLines = [];
+            var usedComponentLines = {};
             var hasChanges = false;
             var i;
 
             /*
-             * NEW LOGIC:
-             * First find parent items present on the order.
-             * Parent = item has custitem_related_components and line rate is 0.
-             * Parent line can be first, middle, or last.
+             * NEW LOGIC - PASS 1:
+             * Find all parent lines on the order.
+             * Parent line condition:
+             * 1. Item has custitem_related_components
+             * 2. Line rate is 0
+             *
+             * Parent can be first, middle, or last line.
              */
             for (i = 0; i < lineCount; i++) {
-                var parentCheckItemId = tranRec.getSublistValue({
+                var parentItemId = tranRec.getSublistValue({
                     sublistId: ITEM_SUBLIST,
                     fieldId: 'item',
                     line: i
                 });
 
-                var parentCheckRate = tranRec.getSublistValue({
+                var parentRate = tranRec.getSublistValue({
                     sublistId: ITEM_SUBLIST,
                     fieldId: 'rate',
                     line: i
                 });
 
-                parentCheckItemId = parentCheckItemId ? String(parentCheckItemId) : '';
-                parentCheckRate = toNumber(parentCheckRate);
+                var parentQty = tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'quantity',
+                    line: i
+                });
 
-                if (parentCheckItemId && parentChildJson[parentCheckItemId] && parentCheckRate === 0) {
-                    parentLineMap[parentCheckItemId] = true;
+                parentItemId = parentItemId ? String(parentItemId) : '';
+                parentRate = toNumber(parentRate);
+                parentQty = toNumber(parentQty);
+
+                if (parentItemId && parentChildJson[parentItemId] && sameNumber(parentRate, 0)) {
+                    parentLines.push({
+                        line: i,
+                        parentItemId: parentItemId,
+                        quantity: parentQty
+                    });
 
                     log.debug('ORDER PARENT FOUND', {
                         line: i,
-                        parentItem: parentCheckItemId,
-                        rate: parentCheckRate
+                        parentItemId: parentItemId,
+                        quantity: parentQty,
+                        rate: parentRate
                     });
                 }
             }
 
+            log.debug('Parent Lines', JSON.stringify(parentLines));
+
             /*
-             * Build child -> parent map only from parent items present on this order.
+             * PASS 2:
+             * Mark all parent lines as Parent.
              */
-            for (var parentId in parentLineMap) {
-                if (parentLineMap[parentId] && parentChildJson[parentId]) {
-                    for (var childId in parentChildJson[parentId]) {
-                        if (!childParentMap[childId]) {
-                            childParentMap[childId] = parentId;
-                        }
+            for (i = 0; i < parentLines.length; i++) {
+                clearParentField(tranRec, parentLines[i].line);
+                setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
+                hasChanges = true;
+
+                log.debug('PARENT UPDATED', {
+                    line: parentLines[i].line,
+                    parentItemId: parentLines[i].parentItemId,
+                    quantity: parentLines[i].quantity
+                });
+            }
+
+            /*
+             * PASS 3:
+             * Assign component lines.
+             *
+             * Match condition:
+             * child item id must match related component item id
+             * AND child quantity must match parent quantity.
+             *
+             * This handles multiple parents with same components.
+             */
+            for (i = 0; i < parentLines.length; i++) {
+                var parentObj = parentLines[i];
+                var childObj = parentChildJson[parentObj.parentItemId];
+
+                if (!childObj) {
+                    continue;
+                }
+
+                for (var childId in childObj) {
+                    var matchedLine = findMatchingComponentLine(
+                        tranRec,
+                        lineCount,
+                        childId,
+                        parentObj.quantity,
+                        usedComponentLines,
+                        parentLines
+                    );
+
+                    if (matchedLine !== -1) {
+                        tranRec.setSublistValue({
+                            sublistId: ITEM_SUBLIST,
+                            fieldId: PARENT_COLUMN_FIELD,
+                            line: matchedLine,
+                            value: parentObj.parentItemId
+                        });
+
+                        setTypeField(tranRec, matchedLine, TYPE_COMPONENT);
+
+                        usedComponentLines[matchedLine] = true;
+                        hasChanges = true;
+
+                        log.debug('COMPONENT UPDATED', {
+                            componentLine: matchedLine,
+                            childItemId: childId,
+                            childQuantity: parentObj.quantity,
+                            parentItemId: parentObj.parentItemId,
+                            parentLine: parentObj.line
+                        });
+                    } else {
+                        log.debug('COMPONENT MATCH NOT FOUND', {
+                            childItemId: childId,
+                            expectedQuantity: parentObj.quantity,
+                            parentItemId: parentObj.parentItemId,
+                            parentLine: parentObj.line
+                        });
                     }
                 }
             }
 
-            log.debug('Parent Line Map', JSON.stringify(parentLineMap));
-            log.debug('Child Parent Map', JSON.stringify(childParentMap));
-
             /*
-             * Second pass:
-             * 1. Parent line = Parent
-             * 2. Child item of any parent present on order = Component + Parent field
-             * 3. Other item = On Bike / Off Bike check
-             * 4. If nothing matched = keep fields blank
+             * PASS 4:
+             * For all remaining lines:
+             * - If On Bike, mark Add-On
+             * - If Off Bike, mark Merch
+             * - If neither, clear parent/type fields
              */
             for (i = 0; i < lineCount; i++) {
                 var lineItemId = tranRec.getSublistValue({
@@ -184,64 +262,29 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     line: i
                 });
 
-                var lineRate = tranRec.getSublistValue({
+                var lineQty = tranRec.getSublistValue({
                     sublistId: ITEM_SUBLIST,
-                    fieldId: 'rate',
+                    fieldId: 'quantity',
                     line: i
                 });
 
                 lineItemId = lineItemId ? String(lineItemId) : '';
-                lineRate = toNumber(lineRate);
-
-                log.debug('Line Update Check', {
-                    line: i,
-                    itemId: lineItemId,
-                    rate: lineRate,
-                    isParent: parentLineMap[lineItemId] ? true : false,
-                    parentForChild: childParentMap[lineItemId] || '',
-                    merchValue: itemMerchJson[lineItemId] || ''
-                });
+                lineQty = toNumber(lineQty);
 
                 if (!lineItemId) {
                     continue;
                 }
 
-                // 1. Parent item line
-                if (parentLineMap[lineItemId]) {
-                    clearParentField(tranRec, i);
-                    setTypeField(tranRec, i, TYPE_PARENT);
-                    hasChanges = true;
-
-                    log.debug('PARENT UPDATED', {
-                        line: i,
-                        parentItem: lineItemId
-                    });
-
+                // Already handled as parent
+                if (isParentLine(i, parentLines)) {
                     continue;
                 }
 
-                // 2. Component / child item line
-                if (childParentMap[lineItemId]) {
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: PARENT_COLUMN_FIELD,
-                        line: i,
-                        value: childParentMap[lineItemId]
-                    });
-
-                    setTypeField(tranRec, i, TYPE_COMPONENT);
-                    hasChanges = true;
-
-                    log.debug('COMPONENT UPDATED', {
-                        line: i,
-                        childItem: lineItemId,
-                        parentItem: childParentMap[lineItemId]
-                    });
-
+                // Already handled as component
+                if (usedComponentLines[i]) {
                     continue;
                 }
 
-                // 3. Not child, so check On Bike / Off Bike field
                 clearParentField(tranRec, i);
 
                 if (itemMerchJson[lineItemId] === MERCH_ON_BIKE_VALUE) {
@@ -251,6 +294,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     log.debug('ADDON UPDATED', {
                         line: i,
                         itemId: lineItemId,
+                        quantity: lineQty,
                         merchValue: itemMerchJson[lineItemId]
                     });
 
@@ -264,19 +308,20 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     log.debug('MERCH UPDATED', {
                         line: i,
                         itemId: lineItemId,
+                        quantity: lineQty,
                         merchValue: itemMerchJson[lineItemId]
                     });
 
                     continue;
                 }
 
-                // 4. Not parent, not component, not On Bike, not Off Bike
                 clearTypeField(tranRec, i);
                 hasChanges = true;
 
                 log.debug('BLANK UPDATED', {
                     line: i,
-                    itemId: lineItemId
+                    itemId: lineItemId,
+                    quantity: lineQty
                 });
             }
 
@@ -288,7 +333,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                 log.audit('TRANSACTION SAVED', recType + ' updated successfully: ' + savedId);
             } else {
-                log.debug('NO CHANGES', 'No child line needed update');
+                log.debug('NO CHANGES', 'No line needed update');
             }
 
         } catch (e) {
@@ -406,6 +451,60 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
         return obj;
     }
 
+    function findMatchingComponentLine(tranRec, lineCount, childId, parentQty, usedComponentLines, parentLines) {
+        var i;
+
+        for (i = 0; i < lineCount; i++) {
+            if (usedComponentLines[i]) {
+                continue;
+            }
+
+            if (isParentLine(i, parentLines)) {
+                continue;
+            }
+
+            var lineItemId = tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'item',
+                line: i
+            });
+
+            var lineQty = tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'quantity',
+                line: i
+            });
+
+            lineItemId = lineItemId ? String(lineItemId) : '';
+            lineQty = toNumber(lineQty);
+
+            if (lineItemId === String(childId) && sameNumber(lineQty, parentQty)) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    function isParentLine(lineNo, parentLines) {
+        var i;
+
+        for (i = 0; i < parentLines.length; i++) {
+            if (Number(parentLines[i].line) === Number(lineNo)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function sameNumber(num1, num2) {
+        num1 = toNumber(num1);
+        num2 = toNumber(num2);
+
+        return Math.abs(num1 - num2) < 0.00001;
+    }
+
     function setTypeByMerchField(tranRec, line, itemId, itemMerchJson) {
         var merchValue = itemMerchJson[itemId] || '';
 
@@ -426,7 +525,12 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 line: line,
                 value: ''
             });
-        } catch (e) {}
+        } catch (e) {
+            log.debug('clearParentField Error', {
+                line: line,
+                error: e.message
+            });
+        }
     }
 
     function clearTypeField(tranRec, line) {
@@ -437,7 +541,12 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 line: line,
                 value: ''
             });
-        } catch (e) {}
+        } catch (e) {
+            log.debug('clearTypeField Error', {
+                line: line,
+                error: e.message
+            });
+        }
     }
 
     function setTypeField(tranRec, line, value) {
@@ -448,7 +557,13 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 line: line,
                 value: value
             });
-        } catch (e) {}
+        } catch (e) {
+            log.debug('setTypeField Error', {
+                line: line,
+                value: value,
+                error: e.message
+            });
+        }
     }
 
     function toNumber(val) {
