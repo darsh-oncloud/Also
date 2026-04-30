@@ -153,7 +153,8 @@ define(['N/file', 'N/search', 'N/runtime', 'N/record', 'N/https'], function (fil
             log.error('Unable to parse SEKO response JSON for ' + payloadId, e);
             return null;
         }
-
+        log.audit('SEKO Parsed JSON Payload ' + payloadId, payloadObj);
+      
         if (payloadObj.error === 'No Data Found') {
             log.debug('SEKO returned No Data Found', payloadId);
             return null;
