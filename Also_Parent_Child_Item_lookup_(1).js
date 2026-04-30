@@ -116,11 +116,67 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             }
 
             var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
-            var currentParent = '';
-            var usedChildMap = {};
+            var parentLineMap = {};
+            var childParentMap = {};
             var hasChanges = false;
             var i;
 
+            /*
+             * NEW LOGIC:
+             * First find parent items present on the order.
+             * Parent = item has custitem_related_components and line rate is 0.
+             * Parent line can be first, middle, or last.
+             */
+            for (i = 0; i < lineCount; i++) {
+                var parentCheckItemId = tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'item',
+                    line: i
+                });
+
+                var parentCheckRate = tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'rate',
+                    line: i
+                });
+
+                parentCheckItemId = parentCheckItemId ? String(parentCheckItemId) : '';
+                parentCheckRate = toNumber(parentCheckRate);
+
+                if (parentCheckItemId && parentChildJson[parentCheckItemId] && parentCheckRate === 0) {
+                    parentLineMap[parentCheckItemId] = true;
+
+                    log.debug('ORDER PARENT FOUND', {
+                        line: i,
+                        parentItem: parentCheckItemId,
+                        rate: parentCheckRate
+                    });
+                }
+            }
+
+            /*
+             * Build child -> parent map only from parent items present on this order.
+             */
+            for (var parentId in parentLineMap) {
+                if (parentLineMap[parentId] && parentChildJson[parentId]) {
+                    for (var childId in parentChildJson[parentId]) {
+                        if (!childParentMap[childId]) {
+                            childParentMap[childId] = parentId;
+                        }
+                    }
+                }
+            }
+
+            log.debug('Parent Line Map', JSON.stringify(parentLineMap));
+            log.debug('Child Parent Map', JSON.stringify(childParentMap));
+
+            /*
+             * Second pass:
+             * 1. Parent line = Parent
+             * 2. Child item of any parent present on order = Component + Parent field
+             * 3. Other item = On Bike / Off Bike check
+             * 4. If nothing matched = keep fields blank
+             */
             for (i = 0; i < lineCount; i++) {
                 var lineItemId = tranRec.getSublistValue({
                     sublistId: ITEM_SUBLIST,
@@ -137,103 +193,91 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 lineItemId = lineItemId ? String(lineItemId) : '';
                 lineRate = toNumber(lineRate);
 
-                log.debug('Line Check', {
+                log.debug('Line Update Check', {
                     line: i,
                     itemId: lineItemId,
                     rate: lineRate,
-                    currentParent: currentParent,
-                    usedChildMap: JSON.stringify(usedChildMap)
+                    isParent: parentLineMap[lineItemId] ? true : false,
+                    parentForChild: childParentMap[lineItemId] || '',
+                    merchValue: itemMerchJson[lineItemId] || ''
                 });
 
                 if (!lineItemId) {
-                    currentParent = '';
-                    usedChildMap = {};
                     continue;
                 }
 
-                // parent line = item exists in json key and rate = 0
-                if (parentChildJson[lineItemId] && lineRate === 0) {
-                    currentParent = lineItemId;
-                    usedChildMap = {};
-
+                // 1. Parent item line
+                if (parentLineMap[lineItemId]) {
                     clearParentField(tranRec, i);
                     setTypeField(tranRec, i, TYPE_PARENT);
                     hasChanges = true;
 
-                    log.debug('PARENT FOUND', {
+                    log.debug('PARENT UPDATED', {
                         line: i,
-                        parentItem: currentParent
+                        parentItem: lineItemId
                     });
 
                     continue;
                 }
 
-                if (currentParent) {
-                    var isValidChild = parentChildJson[currentParent] &&
-                        parentChildJson[currentParent][lineItemId] &&
-                        lineRate > 0;
+                // 2. Component / child item line
+                if (childParentMap[lineItemId]) {
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: PARENT_COLUMN_FIELD,
+                        line: i,
+                        value: childParentMap[lineItemId]
+                    });
 
-                    if (isValidChild) {
-                        // same child repeated again = no longer component, classify by merch field
-                        if (usedChildMap[lineItemId]) {
-                            currentParent = '';
-                            usedChildMap = {};
-
-                            clearParentField(tranRec, i);
-                            setTypeByMerchField(tranRec, i, lineItemId, itemMerchJson);
-                            hasChanges = true;
-
-                            log.debug('REPEATED CHILD CLASSIFIED', {
-                                line: i,
-                                itemId: lineItemId,
-                                merchValue: itemMerchJson[lineItemId] || ''
-                            });
-
-                            continue;
-                        }
-
-                        tranRec.setSublistValue({
-                            sublistId: ITEM_SUBLIST,
-                            fieldId: PARENT_COLUMN_FIELD,
-                            line: i,
-                            value: currentParent
-                        });
-
-                        setTypeField(tranRec, i, TYPE_COMPONENT);
-
-                        usedChildMap[lineItemId] = true;
-                        hasChanges = true;
-
-                        log.debug('CHILD UPDATED', {
-                            line: i,
-                            childItem: lineItemId,
-                            parentItem: currentParent
-                        });
-
-                        continue;
-                    }
-
-                    // not a valid child for current parent
-                    currentParent = '';
-                    usedChildMap = {};
-
-                    clearParentField(tranRec, i);
-                    setTypeByMerchField(tranRec, i, lineItemId, itemMerchJson);
+                    setTypeField(tranRec, i, TYPE_COMPONENT);
                     hasChanges = true;
 
-                    log.debug('SEPARATE ITEM CLASSIFIED', {
+                    log.debug('COMPONENT UPDATED', {
                         line: i,
-                        itemId: lineItemId,
-                        merchValue: itemMerchJson[lineItemId] || ''
+                        childItem: lineItemId,
+                        parentItem: childParentMap[lineItemId]
                     });
 
                     continue;
                 }
 
-                // normal separate line
+                // 3. Not child, so check On Bike / Off Bike field
                 clearParentField(tranRec, i);
-                setTypeByMerchField(tranRec, i, lineItemId, itemMerchJson);
+
+                if (itemMerchJson[lineItemId] === MERCH_ON_BIKE_VALUE) {
+                    setTypeField(tranRec, i, TYPE_ADDON);
+                    hasChanges = true;
+
+                    log.debug('ADDON UPDATED', {
+                        line: i,
+                        itemId: lineItemId,
+                        merchValue: itemMerchJson[lineItemId]
+                    });
+
+                    continue;
+                }
+
+                if (itemMerchJson[lineItemId] === MERCH_OFF_BIKE_VALUE) {
+                    setTypeField(tranRec, i, TYPE_MERCH);
+                    hasChanges = true;
+
+                    log.debug('MERCH UPDATED', {
+                        line: i,
+                        itemId: lineItemId,
+                        merchValue: itemMerchJson[lineItemId]
+                    });
+
+                    continue;
+                }
+
+                // 4. Not parent, not component, not On Bike, not Off Bike
+                clearTypeField(tranRec, i);
                 hasChanges = true;
+
+                log.debug('BLANK UPDATED', {
+                    line: i,
+                    itemId: lineItemId
+                });
             }
 
             if (hasChanges) {
