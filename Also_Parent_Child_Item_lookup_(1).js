@@ -315,15 +315,24 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     continue;
                 }
 
-                clearTypeField(tranRec, i);
+            //     clearTypeField(tranRec, i);
+            //     hasChanges = true;
+
+            //     log.debug('BLANK UPDATED', {
+            //         line: i,
+            //         itemId: lineItemId,
+            //         quantity: lineQty
+            //     });
+            }
+
+              setTypeField(tranRec, i, TYPE_ADDON);
                 hasChanges = true;
 
-                log.debug('BLANK UPDATED', {
-                    line: i,
-                    itemId: lineItemId,
-                    quantity: lineQty
-                });
-            }
+log.debug('DEFAULT ADDON UPDATED', {
+    line: i,
+    itemId: lineItemId,
+    quantity: lineQty
+});
 
             if (hasChanges) {
                 var savedId = tranRec.save({
