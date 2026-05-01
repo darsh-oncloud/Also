@@ -323,7 +323,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             //         itemId: lineItemId,
             //         quantity: lineQty
             //     });
-            }
+            
 
               setTypeField(tranRec, i, TYPE_ADDON);
                 hasChanges = true;
@@ -333,7 +333,7 @@ log.debug('DEFAULT ADDON UPDATED', {
     itemId: lineItemId,
     quantity: lineQty
 });
-
+            }
             if (hasChanges) {
                 var savedId = tranRec.save({
                     enableSourcing: false,
