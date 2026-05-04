@@ -4,8 +4,8 @@
  */
 define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record, log, runtime) {
 
-    // var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
-    var SAVED_SEARCH_ID = '';
+     var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
+    //var SAVED_SEARCH_ID = '';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
