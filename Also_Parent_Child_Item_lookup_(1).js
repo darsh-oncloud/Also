@@ -180,7 +180,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
              */
             for (i = 0; i < parentLines.length; i++) {
                 clearParentField(tranRec, parentLines[i].line);
-                setTypeField(tranRec, parentLines[i].line, TYPE_PARENT
+                setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
 
     var parentLineUniqueKey = tranRec.getSublistValue({
         sublistId: ITEM_SUBLIST,
