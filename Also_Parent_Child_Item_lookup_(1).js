@@ -12,6 +12,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var SPECIAL_VENDOR_FIELD = 'custentity_special_order_vendor';
     var TYPE_COLUMN_FIELD = 'custcol_item_parentcomp';
     var MERCH_ITEM_FIELD = 'custitem_merch_item';
+    var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
 
     // list values
     var TYPE_PARENT = '1';
@@ -179,7 +180,23 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
              */
             for (i = 0; i < parentLines.length; i++) {
                 clearParentField(tranRec, parentLines[i].line);
-                setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
+                setTypeField(tranRec, parentLines[i].line, TYPE_PARENT
+
+    var parentLineUniqueKey = tranRec.getSublistValue({
+        sublistId: ITEM_SUBLIST,
+        fieldId: 'lineuniquekey',
+        line: parentLines[i].line
+    });
+
+    if (parentLineUniqueKey) {
+        tranRec.setSublistValue({
+            sublistId: ITEM_SUBLIST,
+            fieldId: 'custcol_3pl_fulfillment_key',
+            line: parentLines[i].line,
+            value: String(parentLineUniqueKey)
+        });
+    }
+                             
                 hasChanges = true;
 
                 log.debug('PARENT UPDATED', {
