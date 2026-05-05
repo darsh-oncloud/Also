@@ -233,7 +233,7 @@ define(['N/search', 'N/https', 'N/record', 'N/runtime'], function (search, https
             "salesOrderType": "Web",
             "giftCardMessage": "",
             "giftCard": "",
-            "quoteReferenceNumber": "",
+            "quoteReferenceNumber": header.internalId || "",
             "carrierId": "FEDEX",
             "carrierService": "FEDEX_GROUND",
             "orderDate": formatDate(header.orderDate),
