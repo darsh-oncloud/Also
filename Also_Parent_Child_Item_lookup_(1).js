@@ -358,6 +358,40 @@ log.debug('DEFAULT ADDON UPDATED', {
                 });
 
                 log.audit('TRANSACTION SAVED', recType + ' updated successfully: ' + savedId);
+    // DEBUG ONLY - check if line fields actually saved
+    var checkRec = record.load({
+        type: recType,
+        id: savedId,
+        isDynamic: false
+    });
+
+    var checkLineCount = checkRec.getLineCount({ sublistId: ITEM_SUBLIST });
+
+    for (var c = 0; c < checkLineCount; c++) {
+        log.debug('AFTER SAVE LINE CHECK', {
+            line: c,
+            item: checkRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'item',
+                line: c
+            }),
+            parentItem: checkRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: PARENT_COLUMN_FIELD,
+                line: c
+            }),
+            parentCompType: checkRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: c
+            }),
+            fulfillmentKey: checkRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: FULFILLMENT_KEY_FIELD,
+                line: c
+            })
+        });
+    }
             } else {
                 log.debug('NO CHANGES', 'No line needed update');
             }
