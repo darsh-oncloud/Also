@@ -101,6 +101,23 @@ define(['N/file', 'N/search', 'N/runtime', 'N/record','N/https'],
                     fieldId: 'lineuniquekey',
                     line: i
                 });
+
+if (lineKey) {
+    toObj.selectLine({
+        sublistId: 'item',
+        line: i
+    });
+
+    toObj.setCurrentSublistValue({
+        sublistId: 'item',
+        fieldId: 'custcol_3pl_fulfillment_key',
+        value: String(lineKey).replace(/,/g, '')
+    });
+
+    toObj.commitLine({
+        sublistId: 'item'
+    });
+}
                 var invType = toObj.getSublistValue({
                     sublistId: 'item',
                     fieldId: 'itemtype',
