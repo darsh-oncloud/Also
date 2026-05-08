@@ -139,7 +139,7 @@ define(['N/search', 'N/https', 'N/record', 'N/runtime'], function (search, https
 
     function processTypeGroup(soId, header, rows, typeCode, requestCount, resultInfo) {
         var salesOrderIdToSend = String(header.documentNumber || '') + '_' + String(requestCount);
-        var payload = buildPayload(header, rows, salesOrderIdToSend);
+        var payload = buildPayload(header, rows, salesOrderIdToSend, typeCode);
         var headers = {
             'Content-Type': 'application/json',
             'Ocp-Apim-Subscription-Key': '24317d6663034ad4a19f5fce71b1cbe7'
@@ -181,10 +181,18 @@ define(['N/search', 'N/https', 'N/record', 'N/runtime'], function (search, https
         return requestCount;
     }
 
-    function buildPayload(header, rows, salesOrderIdToSend) {
+    function buildPayload(header, rows, salesOrderIdToSend, typeCode) {
         var shipTitle = truncateText(header.shipAddressee || '', 20);
         var details = [];
         var i;
+
+       var carrierId = 'FEDEX';
+       var carrierService = 'FEDEX_GROUND';
+
+       if (typeCode === 'COMPONENT') {
+          carrierId = 'Seko Rateshopping';
+          carrierService = ' ';
+         }
 
         for (i = 0; i < rows.length; i++) {
             details.push({
@@ -234,8 +242,8 @@ define(['N/search', 'N/https', 'N/record', 'N/runtime'], function (search, https
             "giftCardMessage": "",
             "giftCard": "",
             "quoteReferenceNumber": header.internalId || "",
-            "carrierId": "FEDEX",
-            "carrierService": "FEDEX_GROUND",
+            "carrierId": carrierId,
+            "carrierService": carrierService,
             "orderDate": formatDate(header.orderDate),
             "plannedShipDate": formatDate(header.shipDate),
             "purchaseOrderNumber": header.poNumber || "",
