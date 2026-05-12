@@ -182,21 +182,23 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 clearParentField(tranRec, parentLines[i].line);
                 setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
 
-    var parentLineUniqueKey = tranRec.getSublistValue({
-        sublistId: ITEM_SUBLIST,
-        fieldId: 'lineuniquekey',
-        line: parentLines[i].line
-    });
+    // var parentLineUniqueKey = tranRec.getSublistValue({
+    //     sublistId: ITEM_SUBLIST,
+    //     fieldId: 'lineuniquekey',
+    //     line: parentLines[i].line
+    // });
 
-    if (parentLineUniqueKey) {
-        tranRec.setSublistValue({
-            sublistId: ITEM_SUBLIST,
-            fieldId: 'custcol_3pl_fulfillment_key',
-            line: parentLines[i].line,
-            value: String(parentLineUniqueKey)
-        });
-    }
-                             
+    // if (parentLineUniqueKey) {
+    //     tranRec.setSublistValue({
+    //         sublistId: ITEM_SUBLIST,
+    //         fieldId: 'custcol_3pl_fulfillment_key',
+    //         line: parentLines[i].line,
+    //         value: String(parentLineUniqueKey)
+    //     });
+    // }
+
+       setFulfillmentKeyFromLineUniqueKey(tranRec, parentLines[i].line);
+              
                 hasChanges = true;
 
                 log.debug('PARENT UPDATED', {
@@ -243,7 +245,8 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                         });
 
                         setTypeField(tranRec, matchedLine, TYPE_COMPONENT);
-
+                        setFulfillmentKeyFromLineUniqueKey(tranRec, matchedLine);
+                      
                         usedComponentLines[matchedLine] = true;
                         hasChanges = true;
 
@@ -306,6 +309,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                 if (itemMerchJson[lineItemId] === MERCH_ON_BIKE_VALUE) {
                     setTypeField(tranRec, i, TYPE_ADDON);
+                    setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                     hasChanges = true;
 
                     log.debug('ADDON UPDATED', {
@@ -320,6 +324,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                 if (itemMerchJson[lineItemId] === MERCH_OFF_BIKE_VALUE) {
                     setTypeField(tranRec, i, TYPE_MERCH);
+                    setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                     hasChanges = true;
 
                     log.debug('MERCH UPDATED', {
@@ -343,6 +348,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             
 
               setTypeField(tranRec, i, TYPE_ADDON);
+              setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                 hasChanges = true;
 
 log.debug('DEFAULT ADDON UPDATED', {
@@ -604,6 +610,23 @@ log.debug('DEFAULT ADDON UPDATED', {
         }
         return false;
     }
+
+    function setFulfillmentKeyFromLineUniqueKey(tranRec, line) {
+       var lineUniqueKey = tranRec.getSublistValue({
+           sublistId: ITEM_SUBLIST,
+           fieldId: 'lineuniquekey',
+           line: line
+       });
+
+       if (lineUniqueKey) {
+          tranRec.setSublistValue({
+            sublistId: ITEM_SUBLIST,
+            fieldId: FULFILLMENT_KEY_FIELD,
+            line: line,
+            value: String(lineUniqueKey)
+        });
+    }
+}
 
     return {
         afterSubmit: afterSubmit
