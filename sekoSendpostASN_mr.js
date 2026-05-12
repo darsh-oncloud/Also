@@ -71,14 +71,14 @@ define(['N/file', 'N/search', 'N/runtime', 'N/record','N/https'],
             var asn_number = toObj.getValue({
                 fieldId: 'tranid'
             });
-            var po_number = toObj.getValue({
-                fieldId: 'custbody_asn_ponumber'
+            var po_number = toObj.getText({
+                fieldId: 'custbody_pcs_relponum'
             });
             var deliveryDate = toObj.getValue({
                 fieldId: 'custbody_asn_estimateddelivery'
             });
             var asnBillOfLading = toObj.getValue({
-                fieldId: 'custbody_asn_billoflading'
+                fieldId: 'custbody_pcs_bolnum'
             });
             var specialInstructions = toObj.getValue({
                 fieldId: 'custbody_asn_specialinstructions'
@@ -86,7 +86,20 @@ define(['N/file', 'N/search', 'N/runtime', 'N/record','N/https'],
             var guidHeader = toObj.getValue({
                 fieldId: 'custbody_asn_guid'
             });
-            
+            var finalPoString = '';
+
+            for (var i = 0; i < po_number.length; i++) {
+
+                var poNumber = po_number[i].split('#')[1];
+
+                if (i > 0) {
+                    finalPoString += ', ';
+                }
+
+                finalPoString += poNumber;
+            }
+
+            log.debug('finalPoString', finalPoString);            
 
 
             //Get transferOrder items
@@ -178,7 +191,7 @@ if (lineKey) {
                     "companyId": companyId,
                     "fulfillmentCenterId": fulfillmentCenterId,
                     "asn":asn_number,
-                    "purchaseOrderNumber":po_number,
+                    "purchaseOrderNumber":finalPoString,
                     "estimatedDeliveryDate":deliveryDate,
                     "billOfLading":asnBillOfLading,
                     "specialInstructions":specialInstructions,
