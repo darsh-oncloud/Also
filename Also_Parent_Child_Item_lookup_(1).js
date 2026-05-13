@@ -179,6 +179,13 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
              * Mark all parent lines as Parent.
              */
             for (i = 0; i < parentLines.length; i++) {
+                if (!isAllowedItemType(tranRec, parentLines[i].line)) {
+                    log.debug('SKIP PARENT - ITEM TYPE NOT ALLOWED', {
+                        line: parentLines[i].line
+                    });
+                    continue;
+                }
+
                 clearParentField(tranRec, parentLines[i].line);
                 setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
 
@@ -237,6 +244,14 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     );
 
                     if (matchedLine !== -1) {
+                        if (!isAllowedItemType(tranRec, matchedLine)) {
+                            log.debug('SKIP COMPONENT - ITEM TYPE NOT ALLOWED', {
+                                line: matchedLine,
+                                childItemId: childId
+                            });
+                            continue;
+                        }
+
                         tranRec.setSublistValue({
                             sublistId: ITEM_SUBLIST,
                             fieldId: PARENT_COLUMN_FIELD,
@@ -295,6 +310,14 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     continue;
                 }
 
+                if (!isAllowedItemType(tranRec, i)) {
+                    log.debug('SKIP LINE - ITEM TYPE NOT ALLOWED', {
+                        line: i,
+                        itemId: lineItemId
+                    });
+                    continue;
+                }
+
                 // Already handled as parent
                 if (isParentLine(i, parentLines)) {
                     continue;
@@ -347,11 +370,11 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             //     });
             
 
-              setTypeField(tranRec, i, TYPE_ADDON);
+              setTypeField(tranRec, i, TYPE_MERCH);
               setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                 hasChanges = true;
 
-log.debug('DEFAULT ADDON UPDATED', {
+log.debug('DEFAULT OFF BIKE UPDATED', {
     line: i,
     itemId: lineItemId,
     quantity: lineQty
@@ -627,6 +650,18 @@ log.debug('DEFAULT ADDON UPDATED', {
         });
     }
 }
+
+    function isAllowedItemType(tranRec, line) {
+        var lineItemType = tranRec.getSublistValue({
+            sublistId: ITEM_SUBLIST,
+            fieldId: 'itemtype',
+            line: line
+        });
+
+        lineItemType = lineItemType ? String(lineItemType) : '';
+
+        return lineItemType === 'InvtPart' || lineItemType === 'NonInvtPart';
+    }
 
     return {
         afterSubmit: afterSubmit
