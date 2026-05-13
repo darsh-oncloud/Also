@@ -75,7 +75,7 @@ define(['N/file', 'N/search', 'N/runtime', 'N/record','N/https'],
                 fieldId: 'custbody_pcs_relponum'
             });
             var deliveryDate = toObj.getValue({
-                fieldId: 'custbody_asn_estimateddelivery'
+                fieldId: 'custbody_expecteddeliverydate'
             });
             var asnBillOfLading = toObj.getValue({
                 fieldId: 'custbody_pcs_bolnum'
