@@ -47,21 +47,17 @@
           <valuetext></valuetext>
           <valuetype>STATIC</valuetype>
           <initcondition>
-            <formula><![CDATA[( "To Location" IN ("{#Location#}1") OR "Location (Main)" IN ("{#Location#}1") )]]></formula>
+            <formula><![CDATA["Location (Main)" IN ("{#Location#}1")]]></formula>
             <type>VISUAL_BUILDER</type>
             <parameters>
               <parameter>
-                <name>To Location</name>
-                <value>STDBODYTOLOCATION</value>
+                <name>Location (Main)</name>
+                <value>STDBODYLOCATION</value>
               </parameter>
               <parameter>
                 <name>{#Location#}1</name>
                 <selectrecordtype>-103</selectrecordtype>
                 <value>[ACCOUNT_SPECIFIC_VALUE]</value>
-              </parameter>
-              <parameter>
-                <name>Location (Main)</name>
-                <value>STDBODYLOCATION</value>
               </parameter>
             </parameters>
           </initcondition>
