@@ -28,7 +28,7 @@
       <workflowactions triggertype="AFTERSUBMIT">
         <setfieldvalueaction scriptid="workflowaction285">
           <clienttriggerfields></clienttriggerfields>
-          <conditionsavedsearch></conditionsavedsearch>
+          <conditionsavedsearch>[scriptid=customsearch_also_asn_3pl_status]</conditionsavedsearch>
           <contexttypes>ACTION|BANKCONNECTIVITY|BANKSTATEMENTPARSER|BUNDLEINSTALLATION|CLIENT|CSVIMPORT|CUSTOMGLLINES|CUSTOMMASSUPDATE|RECORDACTION|CUSTOMTOOL|DATASETBUILDER|DEBUGGER|EMAILCAPTURE|FICONNECTIVITY|FIPARSER|MAPREDUCE|OCRPLUGIN|OFFLINECLIENT|OTHER|PAYMENTPOSTBACK|PAYMENTGATEWAY|PLATFORMEXTENSION|PORTLET|PROMOTIONS|CONSOLRATEADJUSTOR|RESTWEBSERVICES|RESTLET|ADVANCEDREVREC|SCHEDULED|SDFINSTALLATION|SHIPPINGPARTNERS|WEBSERVICES|SUITELET|TAXCALCULATION|USEREVENT|USERINTERFACE|WORKBOOKBUILDER|WORKFLOW</contexttypes>
           <eventtypes>CREATE|EDIT</eventtypes>
           <field>[scriptid=custbody_3pl_export_status]</field>
@@ -47,19 +47,8 @@
           <valuetext></valuetext>
           <valuetype>STATIC</valuetype>
           <initcondition>
-            <formula><![CDATA["To Location" NOT IN ("{#Location#}1")]]></formula>
+            <formula></formula>
             <type>VISUAL_BUILDER</type>
-            <parameters>
-              <parameter>
-                <name>To Location</name>
-                <value>STDBODYTOLOCATION</value>
-              </parameter>
-              <parameter>
-                <name>{#Location#}1</name>
-                <selectrecordtype>-103</selectrecordtype>
-                <value>[ACCOUNT_SPECIFIC_VALUE]</value>
-              </parameter>
-            </parameters>
           </initcondition>
         </setfieldvalueaction>
       </workflowactions>
