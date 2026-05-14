@@ -4,7 +4,7 @@
   <initeventtypes></initeventtypes>
   <initlocalizationcontext></initlocalizationcontext>
   <initoncreate>T</initoncreate>
-  <initonvieworupdate>T</initonvieworupdate>
+  <initonvieworupdate>F</initonvieworupdate>
   <initsavedsearchcondition></initsavedsearchcondition>
   <inittriggertype></inittriggertype>
   <isinactive>F</isinactive>
@@ -30,7 +30,7 @@
           <clienttriggerfields></clienttriggerfields>
           <conditionsavedsearch>[scriptid=customsearch_also_asn_3pl_status]</conditionsavedsearch>
           <contexttypes>ACTION|BANKCONNECTIVITY|BANKSTATEMENTPARSER|BUNDLEINSTALLATION|CLIENT|CSVIMPORT|CUSTOMGLLINES|CUSTOMMASSUPDATE|RECORDACTION|CUSTOMTOOL|DATASETBUILDER|DEBUGGER|EMAILCAPTURE|FICONNECTIVITY|FIPARSER|MAPREDUCE|OCRPLUGIN|OFFLINECLIENT|OTHER|PAYMENTPOSTBACK|PAYMENTGATEWAY|PLATFORMEXTENSION|PORTLET|PROMOTIONS|CONSOLRATEADJUSTOR|RESTWEBSERVICES|RESTLET|ADVANCEDREVREC|SCHEDULED|SDFINSTALLATION|SHIPPINGPARTNERS|WEBSERVICES|SUITELET|TAXCALCULATION|USEREVENT|USERINTERFACE|WORKBOOKBUILDER|WORKFLOW</contexttypes>
-          <eventtypes>CREATE|EDIT</eventtypes>
+          <eventtypes>CREATE</eventtypes>
           <field>[scriptid=custbody_3pl_export_status]</field>
           <isinactive>F</isinactive>
           <scheduledelay></scheduledelay>
