@@ -34,10 +34,16 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
 
-    function getInputData() {
-        SAVED_SEARCH_ID = runtime.getCurrentScript().getParameter({
+    function getScriptSearchId() {
+        var searchId = runtime.getCurrentScript().getParameter({
             name: 'custscript_3pl_saved_search'
         });
+
+        return String(searchId || '').trim();
+    }
+
+    function getInputData() {
+        SAVED_SEARCH_ID = getScriptSearchId();
 
         if (!SAVED_SEARCH_ID) {
             throw 'Missing required script parameter: custscript_3pl_saved_search';
@@ -83,6 +89,8 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
     function reduce(context) {
         try {
+            SAVED_SEARCH_ID = getScriptSearchId();
+
             if (SAVED_SEARCH_ID === TO_SEARCH_ID) {
                 processTransferOrder(context.key);
                 return;
