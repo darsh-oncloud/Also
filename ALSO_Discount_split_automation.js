@@ -33,12 +33,6 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
       // (Optional safety) check again after load
       var headerDiscountItem = soRec.getValue({ fieldId: 'discountitem' });
       if (!headerDiscountItem) return;
-      if (String(headerDiscountItem) === '911') {
-  soRec.setValue({ fieldId: 'discountitem', value: '' });
-  soRec.setValue({ fieldId: 'custbody_discount_removed', value: true });
-  soRec.save({ enableSourcing: true, ignoreMandatoryFields: true });
-  return;
-}
 
       // Build map: sublist "line" field value => 0-based line index
       var lineIdToIndex = {};
@@ -182,7 +176,7 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
           "AND",
           ["cogs", "is", "F"],
           "AND",
-          ["item", "noneof", String(DISCOUNT_ITEM_ID)]
+          ["item", "noneof", "504","906","911"]
         ],
         columns: [
           search.createColumn({ name: "discountamount" }),
