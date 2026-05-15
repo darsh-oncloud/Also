@@ -4,8 +4,7 @@
  */
 define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record, log, runtime) {
 
-     var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
-    //var SAVED_SEARCH_ID = '';
+    var SAVED_SEARCH_ID = '';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
@@ -19,15 +18,15 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var PC_ADDON = '3';
     var PC_MERCH = '4';
 
-    var STATUS_READY = '1';              // Ready To Send
-    var STATUS_SENT = '2';               // Sent
-    var STATUS_ERROR = '3';              // Error
-    var STATUS_NOT_RELEASED = '4';       // Not Released
-    var STATUS_PARTIAL_READY = '6';      // Partially Ready
-    var STATUS_PARTIAL_SENT = '7';       // Partially Sent
-    var STATUS_FULFILLED = '8';          // Fulfilled
-    var STATUS_PARTIAL_FULFILLED = '9';  // Partially Fulfilled
-    var STATUS_HOLD = '10';               // Hold
+    var STATUS_READY = '1';
+    var STATUS_SENT = '2';
+    var STATUS_ERROR = '3';
+    var STATUS_NOT_RELEASED = '4';
+    var STATUS_PARTIAL_READY = '6';
+    var STATUS_PARTIAL_SENT = '7';
+    var STATUS_FULFILLED = '8';
+    var STATUS_PARTIAL_FULFILLED = '9';
+    var STATUS_HOLD = '10';
 
     var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
@@ -36,6 +35,10 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
         SAVED_SEARCH_ID = runtime.getCurrentScript().getParameter({
             name: 'custscript_3pl_saved_search'
         });
+
+        if (!SAVED_SEARCH_ID) {
+            throw 'Missing required script parameter: custscript_3pl_saved_search';
+        }
 
         log.audit('getInputData', 'Loading saved search: ' + SAVED_SEARCH_ID);
 
@@ -47,27 +50,32 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     function map(context) {
         try {
             var row = JSON.parse(context.value);
-            var soId = '';
+
+            var recId = '';
+            var recType = row.recordType || '';
 
             if (row.values && row.values['GROUP(internalid)']) {
-                soId = String(row.values['GROUP(internalid)'].value || row.values['GROUP(internalid)'] || '');
+                recId = String(row.values['GROUP(internalid)'].value || row.values['GROUP(internalid)'] || '');
             } else if (row.values && row.values.internalid) {
-                soId = String(row.values.internalid.value || row.values.internalid || '');
+                recId = String(row.values.internalid.value || row.values.internalid || '');
             } else if (row.id) {
-                soId = String(row.id || '');
+                recId = String(row.id || '');
             }
 
-            if (!soId) {
+            if (!recId) {
                 log.error('MAP ERROR', {
-                    message: 'Sales Order internal id not found in saved search result',
+                    message: 'Transaction internal id not found in saved search result',
                     row: context.value
                 });
                 return;
             }
 
             context.write({
-                key: soId,
-                value: soId
+                key: recId,
+                value: JSON.stringify({
+                    id: recId,
+                    type: recType
+                })
             });
 
         } catch (e) {
@@ -77,6 +85,16 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
     function reduce(context) {
         try {
+            var firstValue = {};
+            try {
+                firstValue = JSON.parse(context.values[0] || '{}');
+            } catch (eParse) {}
+
+            if (String(firstValue.type || '').toLowerCase() === 'transferorder') {
+                processTransferOrder(context.key);
+                return;
+            }
+
             var soId = context.key;
 
             log.audit('REDUCE START', {
@@ -426,7 +444,167 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
         } catch (e) {
             log.error('REDUCE ERROR', {
-                soId: context.key,
+                id: context.key,
+                message: e.message,
+                stack: e.stack
+            });
+        }
+    }
+
+    function processTransferOrder(toId) {
+        try {
+            log.audit('TO REDUCE START', { toId: toId });
+
+            var toRec = record.load({
+                type: record.Type.TRANSFER_ORDER,
+                id: toId,
+                isDynamic: false
+            });
+
+            var bodyStatus = String(toRec.getValue({
+                fieldId: BODY_STATUS_FIELD
+            }) || '');
+
+            if (
+                bodyStatus === STATUS_SENT ||
+                bodyStatus === STATUS_ERROR ||
+                bodyStatus === STATUS_HOLD ||
+                bodyStatus === STATUS_FULFILLED
+            ) {
+                log.debug('SKIP TO BODY STATUS', {
+                    toId: toId,
+                    bodyStatus: bodyStatus
+                });
+                return;
+            }
+
+            var lineCount = toRec.getLineCount({ sublistId: 'item' });
+
+            var changed = false;
+            var hasEligibleLine = false;
+            var hasAnyCommitted = false;
+            var allLinesFullyCommitted = true;
+
+            for (var i = 0; i < lineCount; i++) {
+
+                var itemId = String(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'item',
+                    line: i
+                }) || '');
+
+                if (itemId === IGNORE_ITEM_ID) {
+                    continue;
+                }
+
+                var qty = Number(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'quantity',
+                    line: i
+                }) || 0);
+
+                var qtyCommitted = Number(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'quantitycommitted',
+                    line: i
+                }) || 0);
+
+                var currentLineStatus = String(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: LINE_STATUS_FIELD,
+                    line: i
+                }) || '');
+
+                if (
+                    currentLineStatus === STATUS_SENT ||
+                    currentLineStatus === STATUS_ERROR ||
+                    currentLineStatus === STATUS_HOLD ||
+                    currentLineStatus === STATUS_FULFILLED
+                ) {
+                    continue;
+                }
+
+                hasEligibleLine = true;
+
+                var targetLineStatus = '';
+
+                if (qtyCommitted > 0) {
+                    hasAnyCommitted = true;
+                }
+
+                if (qty > 0 && qtyCommitted >= qty) {
+                    targetLineStatus = STATUS_READY;
+                } else if (qtyCommitted > 0) {
+                    targetLineStatus = STATUS_PARTIAL_READY;
+                    allLinesFullyCommitted = false;
+                } else {
+                    targetLineStatus = '';
+                    allLinesFullyCommitted = false;
+                }
+
+                if (currentLineStatus !== targetLineStatus) {
+                    toRec.setSublistValue({
+                        sublistId: 'item',
+                        fieldId: LINE_STATUS_FIELD,
+                        line: i,
+                        value: targetLineStatus
+                    });
+                    changed = true;
+                }
+
+                var currentExportQty = Number(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: EXPORT_QTY_FIELD,
+                    line: i
+                }) || 0);
+
+                if (currentExportQty !== qtyCommitted) {
+                    toRec.setSublistValue({
+                        sublistId: 'item',
+                        fieldId: EXPORT_QTY_FIELD,
+                        line: i,
+                        value: qtyCommitted
+                    });
+                    changed = true;
+                }
+            }
+
+            var newBodyStatus = '';
+
+            if (hasEligibleLine && allLinesFullyCommitted) {
+                newBodyStatus = STATUS_READY;
+            } else if (hasEligibleLine && hasAnyCommitted) {
+                newBodyStatus = STATUS_PARTIAL_READY;
+            } else {
+                newBodyStatus = '';
+            }
+
+            if (bodyStatus !== newBodyStatus) {
+                toRec.setValue({
+                    fieldId: BODY_STATUS_FIELD,
+                    value: newBodyStatus
+                });
+                changed = true;
+            }
+
+            if (changed) {
+                var saveId = toRec.save({
+                    enableSourcing: false,
+                    ignoreMandatoryFields: true
+                });
+
+                log.audit('TO SAVED', {
+                    toId: toId,
+                    saveId: saveId,
+                    newBodyStatus: newBodyStatus
+                });
+            } else {
+                log.debug('NO TO CHANGES', { toId: toId });
+            }
+
+        } catch (e) {
+            log.error('TO REDUCE ERROR', {
+                toId: toId,
                 message: e.message,
                 stack: e.stack
             });
@@ -472,12 +650,6 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
         result.minCommitted = Number(minCommitted || 0);
         result.minAvailable = Number(minAvailable || 0);
 
-        /*
-         * Parent/Component business rule:
-         * 1. Every component must have committed > 0, otherwise keep group blank
-         * 2. If committed+fulfilled minimum across components >= parent qty => Ready
-         * 3. Else if committed exists on all components => Partial Ready
-         */
         if (result.minCommitted > 0) {
             if (result.minAvailable >= parentQty) {
                 result.target = STATUS_READY;
