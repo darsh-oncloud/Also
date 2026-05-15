@@ -6,6 +6,9 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
     var SAVED_SEARCH_ID = '';
 
+    var SO_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
+    var TO_SEARCH_ID = 'customsearch_also_to_line_details';
+
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
     var EXPORT_QTY_FIELD = 'custcol_3pl_export_quantity';
@@ -50,9 +53,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     function map(context) {
         try {
             var row = JSON.parse(context.value);
-
             var recId = '';
-            var recType = row.recordType || '';
 
             if (row.values && row.values['GROUP(internalid)']) {
                 recId = String(row.values['GROUP(internalid)'].value || row.values['GROUP(internalid)'] || '');
@@ -72,10 +73,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
             context.write({
                 key: recId,
-                value: JSON.stringify({
-                    id: recId,
-                    type: recType
-                })
+                value: recId
             });
 
         } catch (e) {
@@ -85,13 +83,16 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
     function reduce(context) {
         try {
-            var firstValue = {};
-            try {
-                firstValue = JSON.parse(context.values[0] || '{}');
-            } catch (eParse) {}
-
-            if (String(firstValue.type || '').toLowerCase() === 'transferorder') {
+            if (SAVED_SEARCH_ID === TO_SEARCH_ID) {
                 processTransferOrder(context.key);
+                return;
+            }
+
+            if (SAVED_SEARCH_ID !== SO_SEARCH_ID) {
+                log.error('UNKNOWN SEARCH ID', {
+                    searchId: SAVED_SEARCH_ID,
+                    recordId: context.key
+                });
                 return;
             }
 
