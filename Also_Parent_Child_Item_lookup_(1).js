@@ -333,6 +333,19 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     continue;
                 }
 
+                if (String(tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: TYPE_COLUMN_FIELD,
+                    line: i
+                }) || '') === TYPE_FILLER) {
+                    log.debug('SKIP EXISTING FILLER LINE', {
+                        line: i,
+                        itemId: lineItemId
+                    });
+                    continue;
+                }
+
+              
                 clearParentField(tranRec, i);
 
                 if (itemMerchJson[lineItemId] === MERCH_ON_BIKE_VALUE) {
