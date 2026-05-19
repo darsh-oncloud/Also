@@ -407,6 +407,14 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
                         continue;
                     }
 
+                    if (isFillerAlreadyAdded(tranRec, parentObj.parentItemId, fillerItemId)) {
+                        log.debug('FILLER ITEM SKIPPED - ALREADY EXISTS', {
+                            parentItem: parentObj.parentItemId,
+                            fillerItem: fillerItemId
+                        });
+                        continue;
+                    }
+                  
                     var newLine = tranRec.getLineCount({
                         sublistId: ITEM_SUBLIST
                     });
@@ -789,7 +797,42 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
 
         return lineItemType === 'InvtPart' || lineItemType === 'NonInvtPart';
     }
+    function isFillerAlreadyAdded(tranRec, parentItemId, fillerItemId) {
+        var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
 
+        for (var i = 0; i < lineCount; i++) {
+            var lineItemId = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'item',
+                line: i
+            }) || '');
+
+            var lineParentItemId = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: PARENT_COLUMN_FIELD,
+                line: i
+            }) || '');
+
+            var lineType = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: i
+            }) || '');
+
+            if (
+                lineItemId === String(fillerItemId) &&
+                lineParentItemId === String(parentItemId) &&
+                lineType === String(TYPE_FILLER)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
+  
     return {
         afterSubmit: afterSubmit
     };
