@@ -20,6 +20,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var PC_COMPONENT = '2';
     var PC_ADDON = '3';
     var PC_MERCH = '4';
+    var PC_FILLER = '5';
 
     var STATUS_READY = '1';
     var STATUS_SENT = '2';
@@ -242,7 +243,8 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
                     }
                     parentGroups[itemId].parentLines.push(lineObj);
 
-                } else if (parentComp === PC_COMPONENT) {
+               // } else if (parentComp === PC_COMPONENT) {
+               } else if (parentComp === PC_COMPONENT || parentComp === PC_FILLER) {   
                     if (!parentItemId) {
                         addonLines.push(lineObj);
                     } else {
@@ -354,7 +356,8 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
 
                 if (currentParentComp === PC_PARENT) {
                     exportQtyToSet = Number(minCommittedByParentItem[currentItemId] || 0);
-                } else if (currentParentComp === PC_COMPONENT) {
+              //  } else if (currentParentComp === PC_COMPONENT) {
+                } else if (currentParentComp === PC_COMPONENT || currentParentComp === PC_FILLER) {  
                     exportQtyToSet = Number(minCommittedByParentItem[currentParentItemId] || 0);
                 } else {
                     exportQtyToSet = currentCommittedQty;
