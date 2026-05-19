@@ -115,9 +115,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var itemMerchJson = getItemMerchJson(lineItems);
             log.debug('Item Merch JSON', JSON.stringify(itemMerchJson));
 
-            var packagingFillerJson = getPackagingFillerJson(lineItems);
-            log.debug('Packaging Filler JSON', JSON.stringify(packagingFillerJson));
-
             if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
                 log.debug('STOP', 'No parent-child setup and no merch/onbike-offbike items found');
                 return;
@@ -345,7 +342,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     continue;
                 }
 
-              
                 clearParentField(tranRec, i);
 
                 if (itemMerchJson[lineItemId] === MERCH_ON_BIKE_VALUE) {
@@ -403,10 +399,19 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
              * PASS 5:
              * Add filler items under parent item
              */
+            var parentItemIdsForFiller = [];
+
+            for (i = 0; i < parentLines.length; i++) {
+                parentItemIdsForFiller.push(parentLines[i].parentItemId);
+            }
+
+            var packagingFillerJson = getPackagingFillerJson(parentItemIdsForFiller);
+            log.debug('Packaging Filler JSON', JSON.stringify(packagingFillerJson));
+
             for (i = 0; i < parentLines.length; i++) {
 
-                var parentObj = parentLines[i];
-                var fillerItems = packagingFillerJson[parentObj.parentItemId];
+                var fillerParentObj = parentLines[i];
+                var fillerItems = packagingFillerJson[fillerParentObj.parentItemId];
 
                 if (!fillerItems || !fillerItems.length) {
                     continue;
@@ -420,14 +425,14 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
                         continue;
                     }
 
-                    if (isFillerAlreadyAdded(tranRec, parentObj.parentItemId, fillerItemId)) {
+                    if (isFillerAlreadyAdded(tranRec, fillerParentObj.parentItemId, fillerItemId)) {
                         log.debug('FILLER ITEM SKIPPED - ALREADY EXISTS', {
-                            parentItem: parentObj.parentItemId,
+                            parentItem: fillerParentObj.parentItemId,
                             fillerItem: fillerItemId
                         });
                         continue;
                     }
-                  
+
                     var newLine = tranRec.getLineCount({
                         sublistId: ITEM_SUBLIST
                     });
@@ -476,7 +481,7 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
                         sublistId: ITEM_SUBLIST,
                         fieldId: PARENT_COLUMN_FIELD,
                         line: newLine,
-                        value: parentObj.parentItemId
+                        value: fillerParentObj.parentItemId
                     });
 
                     setTypeField(tranRec, newLine, TYPE_FILLER);
@@ -486,7 +491,7 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
                     hasChanges = true;
 
                     log.debug('FILLER ITEM ADDED', {
-                        parentItem: parentObj.parentItemId,
+                        parentItem: fillerParentObj.parentItemId,
                         fillerItem: fillerItemId,
                         line: newLine
                     });
@@ -606,6 +611,10 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
     function getPackagingFillerJson(itemIds) {
         var json = {};
 
+        if (!itemIds || !itemIds.length) {
+            return json;
+        }
+
         search.create({
             type: "noninventoryitem",
             filters:
@@ -632,10 +641,49 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
                 json[String(itemId)] = String(fillerValues).split(',');
             }
 
+            log.debug('Packaging Filler Search Row', {
+                itemId: itemId,
+                fillerValues: fillerValues
+            });
+
             return true;
         });
 
         return json;
+    }
+
+    function isFillerAlreadyAdded(tranRec, parentItemId, fillerItemId) {
+        var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
+
+        for (var i = 0; i < lineCount; i++) {
+            var lineItemId = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'item',
+                line: i
+            }) || '');
+
+            var lineParentItemId = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: PARENT_COLUMN_FIELD,
+                line: i
+            }) || '');
+
+            var lineType = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: i
+            }) || '');
+
+            if (
+                lineItemId === String(fillerItemId) &&
+                lineParentItemId === String(parentItemId) &&
+                lineType === String(TYPE_FILLER)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     function buildChildObject(value) {
@@ -810,42 +858,7 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
 
         return lineItemType === 'InvtPart' || lineItemType === 'NonInvtPart';
     }
-    function isFillerAlreadyAdded(tranRec, parentItemId, fillerItemId) {
-        var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
 
-        for (var i = 0; i < lineCount; i++) {
-            var lineItemId = String(tranRec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'item',
-                line: i
-            }) || '');
-
-            var lineParentItemId = String(tranRec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: PARENT_COLUMN_FIELD,
-                line: i
-            }) || '');
-
-            var lineType = String(tranRec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: TYPE_COLUMN_FIELD,
-                line: i
-            }) || '');
-
-            if (
-                lineItemId === String(fillerItemId) &&
-                lineParentItemId === String(parentItemId) &&
-                lineType === String(TYPE_FILLER)
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-
-  
     return {
         afterSubmit: afterSubmit
     };
