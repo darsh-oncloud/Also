@@ -26,6 +26,182 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var MERCH_ON_BIKE_VALUE = '1';
     var MERCH_OFF_BIKE_VALUE = '2';
 
+    function beforeSubmit(context) {
+        try {
+            if (context.type !== context.UserEventType.CREATE &&
+                context.type !== context.UserEventType.EDIT) {
+                return;
+            }
+
+            var tranRec = context.newRecord;
+            var recType = tranRec.type;
+
+            if (recType !== 'salesorder') {
+                return;
+            }
+
+            var lineItems = getLineItems(tranRec);
+            if (!lineItems.length) {
+                log.debug('BEFORE SUBMIT STOP', 'No item lines found');
+                return;
+            }
+
+            var parentChildJson = getParentChildJson(lineItems);
+            log.debug('Before Submit Parent Child JSON', JSON.stringify(parentChildJson));
+
+            if (!hasKeys(parentChildJson)) {
+                log.debug('BEFORE SUBMIT STOP', 'No parent-child setup found');
+                return;
+            }
+
+            var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
+            var parentLines = [];
+            var i;
+
+            for (i = 0; i < lineCount; i++) {
+                var parentItemId = tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'item',
+                    line: i
+                });
+
+                var parentRate = tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'rate',
+                    line: i
+                });
+
+                var parentQty = tranRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'quantity',
+                    line: i
+                });
+
+                parentItemId = parentItemId ? String(parentItemId) : '';
+                parentRate = toNumber(parentRate);
+                parentQty = toNumber(parentQty);
+
+                if (parentItemId && parentChildJson[parentItemId] && sameNumber(parentRate, 0)) {
+                    parentLines.push({
+                        line: i,
+                        parentItemId: parentItemId,
+                        quantity: parentQty
+                    });
+
+                    log.debug('BEFORE SUBMIT ORDER PARENT FOUND', {
+                        line: i,
+                        parentItemId: parentItemId,
+                        quantity: parentQty,
+                        rate: parentRate
+                    });
+                }
+            }
+
+            log.debug('Before Submit Parent Lines', JSON.stringify(parentLines));
+
+            var parentItemIdsForFiller = [];
+
+            for (i = 0; i < parentLines.length; i++) {
+                parentItemIdsForFiller.push(parentLines[i].parentItemId);
+            }
+
+            var packagingFillerJson = getPackagingFillerJson(parentItemIdsForFiller);
+            log.debug('Before Submit Packaging Filler JSON', JSON.stringify(packagingFillerJson));
+
+            for (i = 0; i < parentLines.length; i++) {
+
+                var fillerParentObj = parentLines[i];
+                var fillerItems = packagingFillerJson[fillerParentObj.parentItemId];
+
+                if (!fillerItems || !fillerItems.length) {
+                    continue;
+                }
+
+                for (var f = 0; f < fillerItems.length; f++) {
+
+                    var fillerItemId = String(fillerItems[f]).replace(/\s+/g, '');
+
+                    if (!fillerItemId) {
+                        continue;
+                    }
+
+                    if (isFillerAlreadyAdded(tranRec, fillerParentObj.parentItemId, fillerItemId)) {
+                        log.debug('BEFORE SUBMIT FILLER ITEM SKIPPED - ALREADY EXISTS', {
+                            parentItem: fillerParentObj.parentItemId,
+                            fillerItem: fillerItemId
+                        });
+                        continue;
+                    }
+
+                    var newLine = tranRec.getLineCount({
+                        sublistId: ITEM_SUBLIST
+                    });
+
+                    tranRec.insertLine({
+                        sublistId: ITEM_SUBLIST,
+                        line: newLine
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'item',
+                        line: newLine,
+                        value: fillerItemId
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'quantity',
+                        line: newLine,
+                        value: 1
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'location',
+                        line: newLine,
+                        value: 7
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'price',
+                        line: newLine,
+                        value: -1
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'rate',
+                        line: newLine,
+                        value: 0
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: PARENT_COLUMN_FIELD,
+                        line: newLine,
+                        value: fillerParentObj.parentItemId
+                    });
+
+                    setTypeField(tranRec, newLine, TYPE_FILLER);
+
+                    log.debug('BEFORE SUBMIT FILLER ITEM ADDED', {
+                        parentItem: fillerParentObj.parentItemId,
+                        fillerItem: fillerItemId,
+                        line: newLine
+                    });
+                }
+            }
+
+        } catch (e) {
+            log.error({
+                title: 'beforeSubmit Error',
+                details: e
+            });
+        }
+    }
+
     function afterSubmit(context) {
         try {
             if (context.type !== context.UserEventType.CREATE &&
@@ -220,12 +396,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             /*
              * PASS 3:
              * Assign component lines.
-             *
-             * Match condition:
-             * child item id must match related component item id
-             * AND child quantity must match parent quantity.
-             *
-             * This handles multiple parents with same components.
              */
             for (i = 0; i < parentLines.length; i++) {
                 var parentObj = parentLines[i];
@@ -335,6 +505,9 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     fieldId: TYPE_COLUMN_FIELD,
                     line: i
                 }) || '') === TYPE_FILLER) {
+                    setFulfillmentKeyFromLineUniqueKey(tranRec, i);
+                    hasChanges = true;
+
                     log.debug('SKIP EXISTING FILLER LINE', {
                         line: i,
                         itemId: lineItemId
@@ -393,109 +566,6 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
     itemId: lineItemId,
     quantity: lineQty
 });
-            }
-
-            /*
-             * PASS 5:
-             * Add filler items under parent item
-             */
-            var parentItemIdsForFiller = [];
-
-            for (i = 0; i < parentLines.length; i++) {
-                parentItemIdsForFiller.push(parentLines[i].parentItemId);
-            }
-
-            var packagingFillerJson = getPackagingFillerJson(parentItemIdsForFiller);
-            log.debug('Packaging Filler JSON', JSON.stringify(packagingFillerJson));
-
-            for (i = 0; i < parentLines.length; i++) {
-
-                var fillerParentObj = parentLines[i];
-                var fillerItems = packagingFillerJson[fillerParentObj.parentItemId];
-
-                if (!fillerItems || !fillerItems.length) {
-                    continue;
-                }
-
-                for (var f = 0; f < fillerItems.length; f++) {
-
-                    var fillerItemId = String(fillerItems[f]).replace(/\s+/g, '');
-
-                    if (!fillerItemId) {
-                        continue;
-                    }
-
-                    if (isFillerAlreadyAdded(tranRec, fillerParentObj.parentItemId, fillerItemId)) {
-                        log.debug('FILLER ITEM SKIPPED - ALREADY EXISTS', {
-                            parentItem: fillerParentObj.parentItemId,
-                            fillerItem: fillerItemId
-                        });
-                        continue;
-                    }
-
-                    var newLine = tranRec.getLineCount({
-                        sublistId: ITEM_SUBLIST
-                    });
-
-                    tranRec.insertLine({
-                        sublistId: ITEM_SUBLIST,
-                        line: newLine
-                    });
-
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: 'item',
-                        line: newLine,
-                        value: fillerItemId
-                    });
-
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: 'quantity',
-                        line: newLine,
-                        value: 1
-                    });
-
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: 'location',
-                        line: newLine,
-                        value: 7
-                    });
-
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: 'price',
-                        line: newLine,
-                        value: -1
-                    });
-
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: 'rate',
-                        line: newLine,
-                        value: 0
-                    });
-
-                    tranRec.setSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: PARENT_COLUMN_FIELD,
-                        line: newLine,
-                        value: fillerParentObj.parentItemId
-                    });
-
-                    setTypeField(tranRec, newLine, TYPE_FILLER);
-
-                    setFulfillmentKeyFromLineUniqueKey(tranRec, newLine);
-
-                    hasChanges = true;
-
-                    log.debug('FILLER ITEM ADDED', {
-                        parentItem: fillerParentObj.parentItemId,
-                        fillerItem: fillerItemId,
-                        line: newLine
-                    });
-                }
             }
 
             if (hasChanges) {
@@ -620,6 +690,8 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
             filters:
             [
                ["type","anyof","NonInvtPart"],
+               "AND",
+               [PACKAGING_FILLER_FIELD,"notallof","@NONE@"],
                "AND",
                ["internalid","anyof", itemIds]
             ],
@@ -858,6 +930,7 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
     }
 
     return {
+        beforeSubmit: beforeSubmit,
         afterSubmit: afterSubmit
     };
 });
