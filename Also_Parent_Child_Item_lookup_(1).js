@@ -13,12 +13,14 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var TYPE_COLUMN_FIELD = 'custcol_item_parentcomp';
     var MERCH_ITEM_FIELD = 'custitem_merch_item';
     var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
+    var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
 
     // list values
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
     var TYPE_ADDON = '3';
     var TYPE_MERCH = '4';
+    var TYPE_FILLER = '5';
 
     // merch list values
     var MERCH_ON_BIKE_VALUE = '1';
@@ -112,6 +114,9 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
             var itemMerchJson = getItemMerchJson(lineItems);
             log.debug('Item Merch JSON', JSON.stringify(itemMerchJson));
+
+            var packagingFillerJson = getPackagingFillerJson(lineItems);
+            log.debug('Packaging Filler JSON', JSON.stringify(packagingFillerJson));
 
             if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
                 log.debug('STOP', 'No parent-child setup and no merch/onbike-offbike items found');
@@ -380,6 +385,93 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
     quantity: lineQty
 });
             }
+
+            /*
+             * PASS 5:
+             * Add filler items under parent item
+             */
+            for (i = 0; i < parentLines.length; i++) {
+
+                var parentObj = parentLines[i];
+                var fillerItems = packagingFillerJson[parentObj.parentItemId];
+
+                if (!fillerItems || !fillerItems.length) {
+                    continue;
+                }
+
+                for (var f = 0; f < fillerItems.length; f++) {
+
+                    var fillerItemId = String(fillerItems[f]).replace(/\s+/g, '');
+
+                    if (!fillerItemId) {
+                        continue;
+                    }
+
+                    var newLine = tranRec.getLineCount({
+                        sublistId: ITEM_SUBLIST
+                    });
+
+                    tranRec.insertLine({
+                        sublistId: ITEM_SUBLIST,
+                        line: newLine
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'item',
+                        line: newLine,
+                        value: fillerItemId
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'quantity',
+                        line: newLine,
+                        value: 1
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'location',
+                        line: newLine,
+                        value: 7
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'price',
+                        line: newLine,
+                        value: -1
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: 'rate',
+                        line: newLine,
+                        value: 0
+                    });
+
+                    tranRec.setSublistValue({
+                        sublistId: ITEM_SUBLIST,
+                        fieldId: PARENT_COLUMN_FIELD,
+                        line: newLine,
+                        value: parentObj.parentItemId
+                    });
+
+                    setTypeField(tranRec, newLine, TYPE_FILLER);
+
+                    setFulfillmentKeyFromLineUniqueKey(tranRec, newLine);
+
+                    hasChanges = true;
+
+                    log.debug('FILLER ITEM ADDED', {
+                        parentItem: parentObj.parentItemId,
+                        fillerItem: fillerItemId,
+                        line: newLine
+                    });
+                }
+            }
+
             if (hasChanges) {
                 var savedId = tranRec.save({
                     enableSourcing: false,
@@ -482,6 +574,41 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
 
             if (itemId) {
                 json[itemId] = merchValue;
+            }
+
+            return true;
+        });
+
+        return json;
+    }
+
+    function getPackagingFillerJson(itemIds) {
+        var json = {};
+
+        search.create({
+            type: "noninventoryitem",
+            filters:
+            [
+               ["type","anyof","NonInvtPart"],
+               "AND",
+               [PACKAGING_FILLER_FIELD,"notallof","@NONE@"],
+               "AND",
+               ["internalid","anyof", itemIds]
+            ],
+            columns:
+            [
+               search.createColumn({name: PACKAGING_FILLER_FIELD})
+            ]
+        }).run().each(function(result){
+
+            var fillerValues = result.getValue({
+                name: PACKAGING_FILLER_FIELD
+            });
+
+            var itemId = result.id;
+
+            if (itemId && fillerValues) {
+                json[String(itemId)] = String(fillerValues).split(',');
             }
 
             return true;
