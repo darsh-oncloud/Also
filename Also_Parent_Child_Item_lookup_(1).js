@@ -691,8 +691,6 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
             [
                ["type","anyof","NonInvtPart"],
                "AND",
-               [PACKAGING_FILLER_FIELD,"notallof","@NONE@"],
-               "AND",
                ["internalid","anyof", itemIds]
             ],
             columns:
