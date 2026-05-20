@@ -11,11 +11,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
     var SHOPIFY_ORDER_FIELD = 'custbody_celigo_etail_order_id';
 
-    var MAX_RETRY_CHECKS = 8; // 8 * 5 sec = 40 sec
+    var MAX_ERRORS_PER_RUN = 10;
 
     function getInputData() {
         try {
             var errors = getCeligoErrors();
+            var selectedErrors = [];
 
             for (var i = 0; i < errors.length; i++) {
                 var err = errors[i];
@@ -23,12 +24,16 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 var code = err.code || '';
 
                 if ((code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1) && err.retry != 'true') {
-                    return [err]; // only 1 error per run
+                    selectedErrors.push(err);
+
+                    if (selectedErrors.length >= MAX_ERRORS_PER_RUN) {
+                        break;
+                    }
                 }
             }
 
-            log.audit('NO ERROR TO PROCESS', 'No new closed_salesorder error found');
-            return [];
+            log.audit('ERRORS SELECTED', selectedErrors.length);
+            return selectedErrors;
 
         } catch (e) {
             log.error('GET INPUT ERROR', e);
@@ -37,72 +42,96 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
     }
 
     function map(context) {
-        var salesOrderId = '';
-        var openedLines = [];
-
         try {
             var err = JSON.parse(context.value);
 
             var errorId = err.errorId || err.id || err._id;
             var retryDataKey = err.retryDataKey;
             var shopifyOrderId = getShopifyOrderId(err.message || '', err);
-
-            salesOrderId = findSalesOrder(shopifyOrderId);
+            var salesOrderId = findSalesOrder(shopifyOrderId);
 
             if (!salesOrderId) {
-                log.error('PROCESS FAILED', 'Sales Order not found for Shopify Order: ' + shopifyOrderId);
+                log.error('SO NOT FOUND', shopifyOrderId);
                 return;
             }
 
-            openedLines = openAllClosedLines(salesOrderId);
-
+            var openedLines = openAllClosedLines(salesOrderId);
             var retryResult = retryCeligoError(err);
 
-            if (!retryResult.success || !retryResult.retryJobId) {
-                closeOnlyOpenedLines(salesOrderId, openedLines);
-                log.error('RETRY API FAILED - LINES CLOSED BACK', JSON.stringify({
+            context.write({
+                key: 'processed',
+                value: {
+                    errorId: errorId,
+                    retryDataKey: retryDataKey,
+                    shopifyOrderId: shopifyOrderId,
                     salesOrderId: salesOrderId,
                     openedLines: openedLines,
                     retryResult: retryResult
-                }));
-                return;
-            }
-
-            var retryFinishStatus = waitUntilRetryJobFinished(retryResult.retryJobId);
-
-            if (retryFinishStatus.finished === true) {
-                closeOnlyOpenedLines(salesOrderId, openedLines);
-
-                log.audit('PROCESS COMPLETE', JSON.stringify({
-                    shopifyOrderId: shopifyOrderId,
-                    salesOrderId: salesOrderId,
-                    originalErrorId: errorId,
-                    retryDataKey: retryDataKey,
-                    retryJobId: retryResult.retryJobId,
-                    openedAndClosedLines: openedLines,
-                    retryStatus: retryFinishStatus
-                }));
-            } else {
-                log.error('RETRY NOT FINISHED - LINES LEFT OPEN', JSON.stringify({
-                    shopifyOrderId: shopifyOrderId,
-                    salesOrderId: salesOrderId,
-                    retryJobId: retryResult.retryJobId,
-                    openedLines: openedLines,
-                    retryStatus: retryFinishStatus
-                }));
-            }
+                }
+            });
 
         } catch (e) {
-            try {
-                if (salesOrderId && openedLines && openedLines.length) {
-                    closeOnlyOpenedLines(salesOrderId, openedLines);
-                }
-            } catch (closeErr) {
-                log.error('FAILED TO CLOSE LINES AFTER ERROR', closeErr);
+            log.error('MAP ERROR', e);
+        }
+    }
+
+    function reduce(context) {
+        var processedList = [];
+
+        for (var i = 0; i < context.values.length; i++) {
+            processedList.push(JSON.parse(context.values[i]));
+        }
+
+        log.audit('RETRY SUBMITTED COUNT', processedList.length);
+
+        for (var x = 0; x < processedList.length; x++) {
+            var item = processedList[x];
+
+            if (!item.retryResult || !item.retryResult.success || !item.retryResult.retryJobId) {
+                closeOnlyOpenedLines(item.salesOrderId, item.openedLines);
+
+                log.error('RETRY API FAILED - CLOSED BACK', JSON.stringify(item));
+                continue;
             }
 
-            log.error('PROCESS ERROR', e);
+            var jobStatus = getRetryJobStatus(item.retryResult.retryJobId);
+
+            if (jobStatus.finished === true) {
+                closeOnlyOpenedLines(item.salesOrderId, item.openedLines);
+
+                log.audit('ORDER CLOSED BACK', JSON.stringify({
+                    shopifyOrderId: item.shopifyOrderId,
+                    salesOrderId: item.salesOrderId,
+                    errorId: item.errorId,
+                    retryJobId: item.retryResult.retryJobId,
+                    openedLines: item.openedLines,
+                    jobStatus: jobStatus
+                }));
+            } else {
+                log.error('RETRY STILL RUNNING - LINES LEFT OPEN', JSON.stringify({
+                    shopifyOrderId: item.shopifyOrderId,
+                    salesOrderId: item.salesOrderId,
+                    errorId: item.errorId,
+                    retryJobId: item.retryResult.retryJobId,
+                    openedLines: item.openedLines,
+                    jobStatus: jobStatus
+                }));
+            }
         }
+    }
+
+    function getCeligoErrors() {
+        var response = https.get({
+            url: 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors',
+            headers: getHeaders()
+        });
+
+        if (response.code < 200 || response.code >= 300) {
+            throw new Error('Failed to get Celigo errors. Code: ' + response.code + ' Body: ' + response.body);
+        }
+
+        var body = JSON.parse(response.body || '{}');
+        return body.errors || [];
     }
 
     function retryCeligoError(errorObj) {
@@ -134,36 +163,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             retryJobId: body._id || '',
             body: response.body
         };
-    }
-
-    function waitUntilRetryJobFinished(retryJobId) {
-        var lastStatus = {};
-
-        for (var i = 0; i < MAX_RETRY_CHECKS; i++) {
-            waitFiveSeconds();
-
-            lastStatus = getRetryJobStatus(retryJobId);
-
-            if (lastStatus.finished === true) {
-                return lastStatus;
-            }
-        }
-
-        return {
-            finished: false,
-            result: 'not_finished_after_40_seconds',
-            lastStatus: lastStatus
-        };
-    }
-
-    function waitFiveSeconds() {
-        try {
-            https.get({
-                url: 'https://httpbin.org/delay/5'
-            });
-        } catch (e) {
-            // ignore wait error
-        }
     }
 
     function getRetryJobStatus(retryJobId) {
@@ -225,20 +224,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             numError: numError,
             numOpenError: numOpenError
         };
-    }
-
-    function getCeligoErrors() {
-        var response = https.get({
-            url: 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors',
-            headers: getHeaders()
-        });
-
-        if (response.code < 200 || response.code >= 300) {
-            throw new Error('Failed to get Celigo errors. Code: ' + response.code + ' Body: ' + response.body);
-        }
-
-        var body = JSON.parse(response.body || '{}');
-        return body.errors || [];
     }
 
     function getShopifyOrderId(message, err) {
@@ -369,6 +354,11 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             return true;
         });
 
+        summary.reduceSummary.errors.iterator().each(function (key, error) {
+            log.error('REDUCE ERROR ' + key, error);
+            return true;
+        });
+
         log.audit('SUMMARY COMPLETE', {
             usage: summary.usage,
             concurrency: summary.concurrency,
@@ -379,6 +369,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
     return {
         getInputData: getInputData,
         map: map,
+        reduce: reduce,
         summarize: summarize
     };
 });
