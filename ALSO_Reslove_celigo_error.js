@@ -18,16 +18,18 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         try {
             log.audit('START', 'Getting Celigo errors');
 
-            var url = API_BASE_URL + '/flows/' + FLOW_ID + '/imports/' + IMPORT_STEP_ID + '/errors';
+            logImportList();
+
+            var url = API_BASE_URL + '/errors?filter=' + encodeURIComponent(JSON.stringify({
+                _flowId: FLOW_ID,
+                _expOrImpId: IMPORT_STEP_ID
+            }));
 
             log.audit('ERROR API URL', url);
 
             var response = https.get({
                 url: url,
-                headers: {
-                    'Authorization': 'Bearer ' + CELIGO_API_TOKEN,
-                    'Content-Type': 'application/json'
-                }
+                headers: getCeligoHeaders()
             });
 
             log.audit('ERROR API RESPONSE CODE', response.code);
@@ -39,7 +41,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             }
 
             var body = JSON.parse(response.body || '{}');
-
             var errors = body.errors || body.data || body.results || [];
 
             log.audit('TOTAL ERRORS FOUND FROM API', errors.length);
@@ -68,6 +69,32 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             log.error('getInputData ERROR', e);
             return [];
         }
+    }
+
+    function logImportList() {
+        try {
+            var url = API_BASE_URL + '/imports';
+
+            log.audit('IMPORT LIST URL', url);
+
+            var response = https.get({
+                url: url,
+                headers: getCeligoHeaders()
+            });
+
+            log.audit('IMPORT LIST CODE', response.code);
+            log.debug('IMPORT LIST BODY', response.body);
+
+        } catch (e) {
+            log.error('IMPORT LIST ERROR', e);
+        }
+    }
+
+    function getCeligoHeaders() {
+        return {
+            'Authorization': 'Bearer ' + CELIGO_API_TOKEN,
+            'Content-Type': 'application/json'
+        };
     }
 
     function map(context) {
@@ -124,10 +151,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
     function getShopifyOrderId(message) {
         var match = message.match(/Shopify order #(\d+)/);
-        if (match && match[1]) {
-            return match[1];
-        }
-        return '';
+        return match && match[1] ? match[1] : '';
     }
 
     function findSalesOrder(shopifyOrderId) {
@@ -141,17 +165,13 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             columns: ['internalid', 'tranid']
         });
 
-        var result = soSearch.run().getRange({
-            start: 0,
-            end: 1
-        });
+        var result = soSearch.run().getRange({ start: 0, end: 1 });
 
         if (result && result.length > 0) {
             log.audit('SALES ORDER FOUND', JSON.stringify({
                 internalId: result[0].getValue('internalid'),
                 tranid: result[0].getValue('tranid')
             }));
-
             return result[0].getValue('internalid');
         }
 
@@ -165,10 +185,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             isDynamic: false
         });
 
-        var lineCount = soRec.getLineCount({
-            sublistId: 'item'
-        });
-
+        var lineCount = soRec.getLineCount({ sublistId: 'item' });
         var openedLines = [];
 
         log.audit('TOTAL SO ITEM LINES', lineCount);
@@ -240,7 +257,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 };
             }
 
-            var url = API_BASE_URL + '/flows/' + FLOW_ID + '/imports/' + IMPORT_STEP_ID + '/retry';
+            var url = API_BASE_URL + '/errors/retry';
 
             var payload = {
                 retryDataKeys: [retryDataKey]
@@ -251,33 +268,21 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             var response = https.post({
                 url: url,
-                headers: {
-                    'Authorization': 'Bearer ' + CELIGO_API_TOKEN,
-                    'Content-Type': 'application/json'
-                },
+                headers: getCeligoHeaders(),
                 body: JSON.stringify(payload)
             });
 
             log.audit('RETRY RESPONSE CODE', response.code);
             log.debug('RETRY RESPONSE BODY', response.body);
 
-            if (response.code >= 200 && response.code < 300) {
-                return {
-                    success: true,
-                    code: response.code,
-                    body: response.body
-                };
-            }
-
             return {
-                success: false,
+                success: response.code >= 200 && response.code < 300,
                 code: response.code,
                 body: response.body
             };
 
         } catch (e) {
             log.error('retryCeligoError ERROR', e);
-
             return {
                 success: false,
                 message: e.message
@@ -303,20 +308,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             isDynamic: false
         });
 
-        var lineCount = soRec.getLineCount({
-            sublistId: 'item'
-        });
+        var lineCount = soRec.getLineCount({ sublistId: 'item' });
 
         for (var i = 0; i < lineCount; i++) {
             var lineUniqueKey = soRec.getSublistValue({
                 sublistId: 'item',
                 fieldId: 'lineuniquekey',
-                line: i
-            });
-
-            var itemId = soRec.getSublistValue({
-                sublistId: 'item',
-                fieldId: 'item',
                 line: i
             });
 
@@ -328,11 +325,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                     value: true
                 });
 
-                log.audit('CLOSED LINE BACK', JSON.stringify({
-                    line: i,
-                    itemId: itemId,
-                    lineUniqueKey: lineUniqueKey
-                }));
+                log.audit('CLOSED LINE BACK', lineUniqueKey);
             }
         }
 
