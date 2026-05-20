@@ -105,26 +105,28 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
 function getCeligoErrors(importId) {
 
-    var url = API_BASE_URL + '/imports/' + importId + '/errors';
+    var url = API_BASE_URL + '/runs?flowId=' + FLOW_ID;
 
-    log.audit('ERROR API URL', url);
+    log.audit('RUN API URL', url);
 
     var response = https.get({
         url: url,
         headers: getHeaders()
     });
 
-    log.audit('ERROR API RESPONSE CODE', response.code);
-    log.debug('ERROR API RESPONSE BODY', response.body);
+    log.audit('RUN API RESPONSE CODE', response.code);
+    log.debug('RUN API RESPONSE BODY', response.body);
 
     if (response.code < 200 || response.code >= 300) {
-        log.error('FAILED TO GET CELIGO ERRORS', response.body);
+        log.error('FAILED TO GET RUNS', response.body);
         return [];
     }
 
-    var body = JSON.parse(response.body || '{}');
+    var runs = JSON.parse(response.body || '[]');
 
-    return body.errors || body.data || body.results || body || [];
+    log.audit('TOTAL RUNS FOUND', runs.length);
+
+    return [];
 }
 
     function map(context) {
