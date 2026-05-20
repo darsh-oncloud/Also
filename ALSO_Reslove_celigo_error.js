@@ -23,7 +23,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 var msg = err.message || '';
                 var code = err.code || '';
 
-                if ((code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1) && err.retry != 'true') {
+                if ((code == 'closed_salesorder' && err.retry != 'true') {
                     selectedErrors.push(err);
 
                     if (selectedErrors.length >= MAX_ERRORS_PER_RUN) {
