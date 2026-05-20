@@ -11,96 +11,56 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
     var SHOPIFY_ORDER_FIELD = 'custbody_celigo_etail_order_id';
 
-    var WAIT_SECONDS = 5;
-    var MAX_WAIT_SECONDS = 45;
+    var MAX_RETRY_CHECKS = 12;
 
     function getInputData() {
         try {
-            var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors';
-
-            log.audit('GET ERROR URL', url);
-
-            var response = https.get({
-                url: url,
-                headers: getHeaders()
-            });
-
-            log.audit('GET ERROR RESPONSE CODE', response.code);
-            log.debug('GET ERROR RESPONSE BODY', response.body);
-
-            if (response.code < 200 || response.code >= 300) {
-                log.error('FAILED TO GET CELIGO ERRORS', response.body);
-                return [];
-            }
-
-            var body = JSON.parse(response.body || '{}');
-            var errors = body.errors || body.data || body.results || body || [];
-
-            log.audit('TOTAL ERRORS FOUND', errors.length);
+            var errors = getCeligoErrors();
 
             for (var i = 0; i < errors.length; i++) {
                 var err = errors[i];
-                var msg = err.message || err.errorMessage || '';
-                var code = err.code || err.errorCode || '';
+                var msg = err.message || '';
+                var code = err.code || '';
 
-                if (code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1 || msg.indexOf('closed') > -1) {
-                    log.audit('MATCHING CLOSED ORDER ERROR FOUND', JSON.stringify(err));
+                if ((code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1) && err.retry != 'true') {
                     return [err];
                 }
             }
 
-            log.audit('NO MATCHING CLOSED ORDER ERROR FOUND', '');
+            log.audit('NO ERROR TO PROCESS', 'No new closed_salesorder error found');
             return [];
 
         } catch (e) {
-            log.error('getInputData ERROR', e);
+            log.error('GET INPUT ERROR', e);
             return [];
         }
     }
 
     function map(context) {
+        var salesOrderId = '';
+        var openedLines = [];
+
         try {
             var err = JSON.parse(context.value);
 
-            log.audit('PROCESS STARTED FOR ERROR', JSON.stringify(err));
-
-            var message = err.message || err.errorMessage || '';
             var errorId = err.errorId || err.id || err._id;
             var retryDataKey = err.retryDataKey;
+            var shopifyOrderId = getShopifyOrderId(err.message || '', err);
 
-            log.audit('CELIGO ERROR DETAILS', JSON.stringify({
-                errorId: errorId,
-                retryDataKey: retryDataKey
-            }));
-
-            var shopifyOrderId = getShopifyOrderId(message, err);
-
-            if (!shopifyOrderId) {
-                log.error('STOPPED - ORDER ID NOT FOUND FROM ERROR', JSON.stringify(err));
-                return;
-            }
-
-            log.audit('SHOPIFY ORDER ID FOUND', shopifyOrderId);
-
-            var salesOrderId = findSalesOrder(shopifyOrderId);
+            salesOrderId = findSalesOrder(shopifyOrderId);
 
             if (!salesOrderId) {
-                log.error('STOPPED - SALES ORDER NOT FOUND', shopifyOrderId);
+                log.error('PROCESS FAILED', 'Sales Order not found for Shopify Order: ' + shopifyOrderId);
                 return;
             }
 
-            log.audit('SALES ORDER FOUND', salesOrderId);
-
-            var openedLines = openAllClosedLines(salesOrderId);
-
-            log.audit('LINES OPENED BEFORE RETRY', JSON.stringify(openedLines));
+            openedLines = openAllClosedLines(salesOrderId);
 
             var retryResult = retryCeligoError(err);
 
-            log.audit('CELIGO RETRY RESULT', JSON.stringify(retryResult));
-
-            if (!retryResult.success || !retryResult.retryJobId) {
-                log.error('RETRY NOT STARTED - LINES LEFT OPEN', JSON.stringify({
+            if (!retryResult.success) {
+                closeOnlyOpenedLines(salesOrderId, openedLines);
+                log.error('RETRY API FAILED - LINES CLOSED BACK', JSON.stringify({
                     errorId: errorId,
                     retryDataKey: retryDataKey,
                     salesOrderId: salesOrderId,
@@ -110,191 +70,117 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 return;
             }
 
-            var finalStatus = waitForRetryJob(retryResult.retryJobId);
+            var retryFinishStatus = waitUntilRetryFinished(retryDataKey, errorId);
 
-            log.audit('FINAL RETRY JOB STATUS', JSON.stringify(finalStatus));
+            closeOnlyOpenedLines(salesOrderId, openedLines);
 
-            if (finalStatus.success === true) {
-                closeOnlyOpenedLines(salesOrderId, openedLines);
-
-                log.audit('PROCESS COMPLETE SUCCESS', JSON.stringify({
-                    errorId: errorId,
-                    retryDataKey: retryDataKey,
-                    retryJobId: retryResult.retryJobId,
-                    shopifyOrderId: shopifyOrderId,
-                    salesOrderId: salesOrderId,
-                    openedAndClosedLines: openedLines
-                }));
-            } else {
-                log.error('RETRY NOT SUCCESSFUL YET - LINES LEFT OPEN', JSON.stringify({
-                    errorId: errorId,
-                    retryDataKey: retryDataKey,
-                    retryJobId: retryResult.retryJobId,
-                    salesOrderId: salesOrderId,
-                    openedLines: openedLines,
-                    finalStatus: finalStatus
-                }));
-            }
+            log.audit('PROCESS COMPLETE', JSON.stringify({
+                shopifyOrderId: shopifyOrderId,
+                salesOrderId: salesOrderId,
+                originalErrorId: errorId,
+                retryDataKey: retryDataKey,
+                openedAndClosedLines: openedLines,
+                retryStatus: retryFinishStatus
+            }));
 
         } catch (e) {
-            log.error('map ERROR', e);
+            try {
+                if (salesOrderId && openedLines && openedLines.length) {
+                    closeOnlyOpenedLines(salesOrderId, openedLines);
+                }
+            } catch (closeErr) {
+                log.error('FAILED TO CLOSE LINES AFTER ERROR', closeErr);
+            }
+
+            log.error('PROCESS ERROR', e);
         }
+    }
+
+    function waitUntilRetryFinished(retryDataKey, originalErrorId) {
+        var lastStatus = {
+            finished: false,
+            result: 'not_confirmed'
+        };
+
+        for (var i = 0; i < MAX_RETRY_CHECKS; i++) {
+            var errors = getCeligoErrors();
+            var sameRetryErrorFound = false;
+            var retryFailedErrorFound = false;
+
+            for (var x = 0; x < errors.length; x++) {
+                var err = errors[x];
+
+                if (String(err.retryDataKey) == String(retryDataKey)) {
+                    sameRetryErrorFound = true;
+
+                    if (err.retry == 'true' || String(err.errorId) != String(originalErrorId)) {
+                        retryFailedErrorFound = true;
+                        lastStatus = {
+                            finished: true,
+                            result: 'retry_failed',
+                            retryErrorId: err.errorId,
+                            message: err.message
+                        };
+                    }
+                }
+            }
+
+            if (retryFailedErrorFound) {
+                return lastStatus;
+            }
+
+            if (!sameRetryErrorFound) {
+                return {
+                    finished: true,
+                    result: 'retry_success_or_error_resolved'
+                };
+            }
+        }
+
+        return lastStatus;
+    }
+
+    function getCeligoErrors() {
+        var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors';
+
+        var response = https.get({
+            url: url,
+            headers: getHeaders()
+        });
+
+        if (response.code < 200 || response.code >= 300) {
+            throw new Error('Failed to get Celigo errors. Code: ' + response.code + ' Body: ' + response.body);
+        }
+
+        var body = JSON.parse(response.body || '{}');
+        return body.errors || [];
     }
 
     function retryCeligoError(errorObj) {
-        try {
-            var retryDataKey = errorObj.retryDataKey;
-            var errorId = errorObj.errorId || errorObj.id || errorObj._id;
+        var retryDataKey = errorObj.retryDataKey;
 
-            if (!retryDataKey) {
-                return {
-                    success: false,
-                    message: 'Missing retryDataKey',
-                    errorId: errorId
-                };
-            }
-
-            var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry';
-
-            var payload = {
-                retryDataKeys: [String(retryDataKey)]
-            };
-
-            log.audit('RETRY URL', url);
-            log.audit('RETRY PAYLOAD', JSON.stringify(payload));
-
-            var response = https.post({
-                url: url,
-                headers: getHeaders(),
-                body: JSON.stringify(payload)
-            });
-
-            log.audit('RETRY RESPONSE CODE', response.code);
-            log.debug('RETRY RESPONSE BODY', response.body);
-
-            var body = {};
-            try {
-                body = JSON.parse(response.body || '{}');
-            } catch (parseErr) {
-                body = {};
-            }
-
-            return {
-                success: response.code >= 200 && response.code < 300,
-                code: response.code,
-                body: response.body,
-                retryJobId: body._id || ''
-            };
-
-        } catch (e) {
-            log.error('retryCeligoError ERROR', e);
+        if (!retryDataKey) {
             return {
                 success: false,
-                message: e.message
+                message: 'Missing retryDataKey'
             };
         }
-    }
 
-    function waitForRetryJob(retryJobId) {
-        var waited = 0;
+        var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry';
 
-        while (waited < MAX_WAIT_SECONDS) {
-            waitSeconds(WAIT_SECONDS);
-            waited += WAIT_SECONDS;
-
-            var status = getRetryJobStatus(retryJobId);
-
-            log.audit('RETRY JOB CHECK AFTER ' + waited + ' SECONDS', JSON.stringify(status));
-
-            if (status.success === true) {
-                return status;
-            }
-
-            if (status.completed === true && status.success !== true) {
-                return status;
-            }
-        }
+        var response = https.post({
+            url: url,
+            headers: getHeaders(),
+            body: JSON.stringify({
+                retryDataKeys: [String(retryDataKey)]
+            })
+        });
 
         return {
-            success: false,
-            completed: false,
-            message: 'Retry job not completed within ' + MAX_WAIT_SECONDS + ' seconds',
-            retryJobId: retryJobId
+            success: response.code >= 200 && response.code < 300,
+            code: response.code,
+            body: response.body
         };
-    }
-
-    function getRetryJobStatus(retryJobId) {
-        try {
-            var url = 'https://api.integrator.io/v1/flowJobs/' + retryJobId;
-
-            log.audit('RETRY JOB STATUS URL', url);
-
-            var response = https.get({
-                url: url,
-                headers: getHeaders()
-            });
-
-            log.audit('RETRY JOB STATUS RESPONSE CODE', response.code);
-            log.debug('RETRY JOB STATUS RESPONSE BODY', response.body);
-
-            if (response.code < 200 || response.code >= 300) {
-                return {
-                    success: false,
-                    completed: false,
-                    code: response.code,
-                    body: response.body,
-                    retryJobId: retryJobId
-                };
-            }
-
-            var body = JSON.parse(response.body || '{}');
-
-            var status = body.status || '';
-            var numSuccess = Number(body.numSuccess || 0);
-            var numError = Number(body.numError || 0);
-            var numOpenError = Number(body.numOpenError || 0);
-            var doneExporting = body.doneExporting === true;
-
-            var completed = false;
-            var success = false;
-
-            if (status == 'completed' || status == 'complete' || status == 'finished' || doneExporting === true) {
-                completed = true;
-            }
-
-            if (completed && numSuccess > 0 && numError === 0 && numOpenError === 0) {
-                success = true;
-            }
-
-            return {
-                success: success,
-                completed: completed,
-                status: status,
-                doneExporting: doneExporting,
-                numSuccess: numSuccess,
-                numError: numError,
-                numOpenError: numOpenError,
-                retryJobId: retryJobId,
-                rawBody: body
-            };
-
-        } catch (e) {
-            log.error('getRetryJobStatus ERROR', e);
-            return {
-                success: false,
-                completed: false,
-                message: e.message,
-                retryJobId: retryJobId
-            };
-        }
-    }
-
-    function waitSeconds(seconds) {
-        var endTime = new Date().getTime() + (seconds * 1000);
-
-        while (new Date().getTime() < endTime) {
-            // intentional wait
-        }
     }
 
     function getShopifyOrderId(message, err) {
@@ -302,8 +188,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         if (match && match[1]) return match[1];
 
         if (err.traceKey) return String(err.traceKey);
-        if (err.record && err.record.id) return String(err.record.id);
-        if (err.data && err.data.id) return String(err.data.id);
 
         return '';
     }
@@ -316,7 +200,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 'AND',
                 [SHOPIFY_ORDER_FIELD, 'is', String(shopifyOrderId)]
             ],
-            columns: ['internalid', 'tranid']
+            columns: ['internalid']
         });
 
         var result = soSearch.run().getRange({
@@ -324,16 +208,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             end: 1
         });
 
-        if (result && result.length) {
-            log.audit('SALES ORDER MATCHED', JSON.stringify({
-                internalId: result[0].getValue('internalid'),
-                tranid: result[0].getValue('tranid')
-            }));
-
-            return result[0].getValue('internalid');
-        }
-
-        return '';
+        return result && result.length ? result[0].getValue('internalid') : '';
     }
 
     function openAllClosedLines(salesOrderId) {
@@ -343,11 +218,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             isDynamic: false
         });
 
-        var lineCount = soRec.getLineCount({
-            sublistId: 'item'
-        });
-
         var openedLines = [];
+        var lineCount = soRec.getLineCount({ sublistId: 'item' });
 
         for (var i = 0; i < lineCount; i++) {
             var isClosed = soRec.getSublistValue({
@@ -356,13 +228,13 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 line: i
             });
 
-            var lineKey = soRec.getSublistValue({
-                sublistId: 'item',
-                fieldId: 'lineuniquekey',
-                line: i
-            });
-
             if (isClosed === true || isClosed === 'T') {
+                var lineKey = soRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'lineuniquekey',
+                    line: i
+                });
+
                 openedLines.push(String(lineKey));
 
                 soRec.setSublistValue({
@@ -371,8 +243,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                     line: i,
                     value: false
                 });
-
-                log.audit('OPENED LINE', lineKey);
             }
         }
 
@@ -381,20 +251,13 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 enableSourcing: true,
                 ignoreMandatoryFields: true
             });
-
-            log.audit('SALES ORDER SAVED AFTER OPENING LINES', salesOrderId);
-        } else {
-            log.audit('NO CLOSED LINES FOUND TO OPEN', salesOrderId);
         }
 
         return openedLines;
     }
 
     function closeOnlyOpenedLines(salesOrderId, openedLines) {
-        if (!openedLines || !openedLines.length) {
-            log.audit('NO LINES TO CLOSE BACK', salesOrderId);
-            return;
-        }
+        if (!openedLines || !openedLines.length) return;
 
         var lineMap = {};
 
@@ -408,9 +271,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             isDynamic: false
         });
 
-        var lineCount = soRec.getLineCount({
-            sublistId: 'item'
-        });
+        var lineCount = soRec.getLineCount({ sublistId: 'item' });
 
         for (var j = 0; j < lineCount; j++) {
             var lineKey = soRec.getSublistValue({
@@ -426,8 +287,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                     line: j,
                     value: true
                 });
-
-                log.audit('CLOSED LINE BACK', lineKey);
             }
         }
 
@@ -435,8 +294,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             enableSourcing: true,
             ignoreMandatoryFields: true
         });
-
-        log.audit('SALES ORDER SAVED AFTER CLOSING LINES BACK', salesOrderId);
     }
 
     function getHeaders() {
@@ -452,7 +309,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         }
 
         summary.mapSummary.errors.iterator().each(function (key, error) {
-            log.error('MAP ERROR FOR KEY ' + key, error);
+            log.error('MAP ERROR ' + key, error);
             return true;
         });
 
