@@ -9,41 +9,25 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
     var API_BASE_URL = 'https://api.integrator.io/v1';
 
     var FLOW_ID = '68e819893fe2e005c7712f48';
-    var IMPORT_STEP_ID = '68e8197b53e4a108b091452c';
+    var STEP_NAME_TO_FIND = 'Post orders to NetSuite';
 
     var ERROR_CODE = 'closed_salesorder';
     var SHOPIFY_ORDER_FIELD = 'custbody_celigo_etail_order_id';
 
     function getInputData() {
         try {
-            log.audit('START', 'Getting Celigo errors');
+            log.audit('START', 'Finding Celigo step/import ID');
 
-            logImportList();
+            var importId = findImportIdByName();
 
-            var url = API_BASE_URL + '/errors?filter=' + encodeURIComponent(JSON.stringify({
-                _flowId: FLOW_ID,
-                _expOrImpId: IMPORT_STEP_ID
-            }));
-
-            log.audit('ERROR API URL', url);
-
-            var response = https.get({
-                url: url,
-                headers: getCeligoHeaders()
-            });
-
-            log.audit('ERROR API RESPONSE CODE', response.code);
-            log.debug('ERROR API RESPONSE BODY', response.body);
-
-            if (response.code < 200 || response.code >= 300) {
-                log.error('FAILED TO GET CELIGO ERRORS', response.body);
+            if (!importId) {
+                log.error('IMPORT STEP NOT FOUND', 'Could not find step name: ' + STEP_NAME_TO_FIND);
                 return [];
             }
 
-            var body = JSON.parse(response.body || '{}');
-            var errors = body.errors || body.data || body.results || [];
+            log.audit('FINAL IMPORT STEP ID USED', importId);
 
-            log.audit('TOTAL ERRORS FOUND FROM API', errors.length);
+            var errors = getCeligoErrors(importId);
 
             for (var i = 0; i < errors.length; i++) {
                 var err = errors[i];
@@ -58,11 +42,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
                 if (code == ERROR_CODE || message.indexOf('already "Closed"') > -1) {
                     log.audit('MATCHING ERROR FOUND - PROCESSING ONLY 1', JSON.stringify(err));
+                    err.importId = importId;
                     return [err];
                 }
             }
 
-            log.audit('NO MATCHING closed_salesorder ERROR FOUND', '');
+            log.audit('NO MATCHING CLOSED ORDER ERROR FOUND', '');
             return [];
 
         } catch (e) {
@@ -71,30 +56,77 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         }
     }
 
-    function logImportList() {
-        try {
-            var url = API_BASE_URL + '/imports';
+    function findImportIdByName() {
+        var url = API_BASE_URL + '/imports';
 
-            log.audit('IMPORT LIST URL', url);
+        log.audit('IMPORT LIST URL', url);
 
-            var response = https.get({
-                url: url,
-                headers: getCeligoHeaders()
-            });
+        var response = https.get({
+            url: url,
+            headers: getHeaders()
+        });
 
-            log.audit('IMPORT LIST CODE', response.code);
-            log.debug('IMPORT LIST BODY', response.body);
+        log.audit('IMPORT LIST CODE', response.code);
+        log.debug('IMPORT LIST BODY', response.body);
 
-        } catch (e) {
-            log.error('IMPORT LIST ERROR', e);
+        if (response.code < 200 || response.code >= 300) {
+            log.error('FAILED TO GET IMPORTS', response.body);
+            return '';
         }
+
+        var imports = JSON.parse(response.body || '[]');
+
+        for (var i = 0; i < imports.length; i++) {
+            var imp = imports[i];
+
+            if (imp.name == STEP_NAME_TO_FIND) {
+                log.audit('MATCHING IMPORT FOUND', JSON.stringify({
+                    id: imp._id,
+                    name: imp.name,
+                    apiIdentifier: imp.apiIdentifier,
+                    integrationId: imp._integrationId
+                }));
+
+                return imp._id;
+            }
+
+            if (imp.name && imp.name.indexOf('orders') > -1) {
+                log.audit('ORDER RELATED IMPORT FOUND', JSON.stringify({
+                    id: imp._id,
+                    name: imp.name,
+                    apiIdentifier: imp.apiIdentifier,
+                    integrationId: imp._integrationId
+                }));
+            }
+        }
+
+        return '';
     }
 
-    function getCeligoHeaders() {
-        return {
-            'Authorization': 'Bearer ' + CELIGO_API_TOKEN,
-            'Content-Type': 'application/json'
-        };
+    function getCeligoErrors(importId) {
+        var url = API_BASE_URL + '/errors?filter=' + encodeURIComponent(JSON.stringify({
+            _flowId: FLOW_ID,
+            _expOrImpId: importId
+        }));
+
+        log.audit('ERROR API URL', url);
+
+        var response = https.get({
+            url: url,
+            headers: getHeaders()
+        });
+
+        log.audit('ERROR API RESPONSE CODE', response.code);
+        log.debug('ERROR API RESPONSE BODY', response.body);
+
+        if (response.code < 200 || response.code >= 300) {
+            log.error('FAILED TO GET CELIGO ERRORS', response.body);
+            return [];
+        }
+
+        var body = JSON.parse(response.body || '{}');
+
+        return body.errors || body.data || body.results || [];
     }
 
     function map(context) {
@@ -105,6 +137,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             var message = err.message || err.errorMessage || '';
             var retryDataKey = err.retryDataKey || err.retryDataKeyId || err._retryDataKey || err.id || err._id;
+            var importId = err.importId;
 
             log.audit('RETRY DATA KEY', retryDataKey);
 
@@ -130,12 +163,18 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             log.audit('OPENED CLOSED LINES', JSON.stringify(openedLines));
 
-            var retryResult = retryCeligoError(retryDataKey);
+            var retryResult = retryCeligoError(retryDataKey, importId);
 
             log.audit('CELIGO RETRY RESULT', JSON.stringify(retryResult));
 
             if (retryResult.success) {
                 closeOnlyOpenedLines(salesOrderId, openedLines);
+
+                log.audit('PROCESS COMPLETE', JSON.stringify({
+                    salesOrderId: salesOrderId,
+                    shopifyOrderId: shopifyOrderId,
+                    openedAndClosedLines: openedLines
+                }));
             } else {
                 log.error('RETRY FAILED - LINES LEFT OPEN', JSON.stringify({
                     salesOrderId: salesOrderId,
@@ -147,6 +186,39 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         } catch (e) {
             log.error('map ERROR', e);
         }
+    }
+
+    function retryCeligoError(retryDataKey, importId) {
+        if (!retryDataKey) {
+            return {
+                success: false,
+                message: 'Missing retryDataKey'
+            };
+        }
+
+        var url = API_BASE_URL + '/flows/' + FLOW_ID + '/imports/' + importId + '/retry';
+
+        var payload = {
+            retryDataKeys: [retryDataKey]
+        };
+
+        log.audit('RETRY API URL', url);
+        log.audit('RETRY PAYLOAD', JSON.stringify(payload));
+
+        var response = https.post({
+            url: url,
+            headers: getHeaders(),
+            body: JSON.stringify(payload)
+        });
+
+        log.audit('RETRY RESPONSE CODE', response.code);
+        log.debug('RETRY RESPONSE BODY', response.body);
+
+        return {
+            success: response.code >= 200 && response.code < 300,
+            code: response.code,
+            body: response.body
+        };
     }
 
     function getShopifyOrderId(message) {
@@ -165,13 +237,17 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             columns: ['internalid', 'tranid']
         });
 
-        var result = soSearch.run().getRange({ start: 0, end: 1 });
+        var result = soSearch.run().getRange({
+            start: 0,
+            end: 1
+        });
 
         if (result && result.length > 0) {
             log.audit('SALES ORDER FOUND', JSON.stringify({
                 internalId: result[0].getValue('internalid'),
                 tranid: result[0].getValue('tranid')
             }));
+
             return result[0].getValue('internalid');
         }
 
@@ -188,8 +264,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         var lineCount = soRec.getLineCount({ sublistId: 'item' });
         var openedLines = [];
 
-        log.audit('TOTAL SO ITEM LINES', lineCount);
-
         for (var i = 0; i < lineCount; i++) {
             var isClosed = soRec.getSublistValue({
                 sublistId: 'item',
@@ -203,19 +277,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 line: i
             });
 
-            var itemId = soRec.getSublistValue({
-                sublistId: 'item',
-                fieldId: 'item',
-                line: i
-            });
-
-            log.debug('LINE CHECK', JSON.stringify({
-                line: i,
-                itemId: itemId,
-                lineUniqueKey: lineUniqueKey,
-                isClosed: isClosed
-            }));
-
             if (isClosed === true || isClosed === 'T') {
                 openedLines.push(String(lineUniqueKey));
 
@@ -226,76 +287,21 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                     value: false
                 });
 
-                log.audit('OPENED LINE', JSON.stringify({
-                    line: i,
-                    itemId: itemId,
-                    lineUniqueKey: lineUniqueKey
-                }));
+                log.audit('OPENED LINE', lineUniqueKey);
             }
         }
 
         if (openedLines.length > 0) {
-            var savedId = soRec.save({
+            soRec.save({
                 enableSourcing: true,
                 ignoreMandatoryFields: true
             });
-
-            log.audit('SALES ORDER SAVED AFTER OPENING LINES', savedId);
-        } else {
-            log.audit('NO CLOSED LINES FOUND TO OPEN', salesOrderId);
         }
 
         return openedLines;
     }
 
-    function retryCeligoError(retryDataKey) {
-        try {
-            if (!retryDataKey) {
-                return {
-                    success: false,
-                    message: 'Missing retryDataKey / error id'
-                };
-            }
-
-            var url = API_BASE_URL + '/errors/retry';
-
-            var payload = {
-                retryDataKeys: [retryDataKey]
-            };
-
-            log.audit('RETRY API URL', url);
-            log.audit('RETRY PAYLOAD', JSON.stringify(payload));
-
-            var response = https.post({
-                url: url,
-                headers: getCeligoHeaders(),
-                body: JSON.stringify(payload)
-            });
-
-            log.audit('RETRY RESPONSE CODE', response.code);
-            log.debug('RETRY RESPONSE BODY', response.body);
-
-            return {
-                success: response.code >= 200 && response.code < 300,
-                code: response.code,
-                body: response.body
-            };
-
-        } catch (e) {
-            log.error('retryCeligoError ERROR', e);
-            return {
-                success: false,
-                message: e.message
-            };
-        }
-    }
-
     function closeOnlyOpenedLines(salesOrderId, openedLines) {
-        if (!openedLines || openedLines.length === 0) {
-            log.audit('NO OPENED LINES TO CLOSE BACK', salesOrderId);
-            return;
-        }
-
         var openedLineMap = {};
 
         for (var x = 0; x < openedLines.length; x++) {
@@ -329,12 +335,17 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             }
         }
 
-        var savedId = soRec.save({
+        soRec.save({
             enableSourcing: true,
             ignoreMandatoryFields: true
         });
+    }
 
-        log.audit('SALES ORDER SAVED AFTER CLOSING LINES BACK', savedId);
+    function getHeaders() {
+        return {
+            'Authorization': 'Bearer ' + CELIGO_API_TOKEN,
+            'Content-Type': 'application/json'
+        };
     }
 
     function summarize(summary) {
