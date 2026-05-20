@@ -42,14 +42,15 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 var code = err.code || err.errorCode || '';
 
                 log.debug('CHECKING ERROR', JSON.stringify({
-                    errorId: err.id || err._id,
+                    errorId: err.errorId || err.id || err._id,
+                    retryDataKey: err.retryDataKey,
                     code: code,
                     message: msg
                 }));
 
                 if (code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1 || msg.indexOf('closed') > -1) {
                     log.audit('MATCHING CLOSED ORDER ERROR FOUND', JSON.stringify(err));
-                    return [err]; // only 1 error per run
+                    return [err];
                 }
             }
 
@@ -69,9 +70,13 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             log.audit('PROCESS STARTED FOR ERROR', JSON.stringify(err));
 
             var message = err.message || err.errorMessage || '';
-            var errorId = err.id || err._id || err.errorId;
+            var errorId = err.errorId || err.id || err._id;
+            var retryDataKey = err.retryDataKey;
 
-            log.audit('CELIGO ERROR ID', errorId);
+            log.audit('CELIGO ERROR DETAILS', JSON.stringify({
+                errorId: errorId,
+                retryDataKey: retryDataKey
+            }));
 
             var shopifyOrderId = getShopifyOrderId(message, err);
 
@@ -95,7 +100,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             log.audit('LINES OPENED BEFORE RETRY', JSON.stringify(openedLines));
 
-            var retryResult = retryCeligoError(errorId);
+            var retryResult = retryCeligoError(err);
 
             log.audit('CELIGO RETRY RESULT', JSON.stringify(retryResult));
 
@@ -104,6 +109,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
                 log.audit('PROCESS COMPLETE SUCCESS', JSON.stringify({
                     errorId: errorId,
+                    retryDataKey: retryDataKey,
                     shopifyOrderId: shopifyOrderId,
                     salesOrderId: salesOrderId,
                     openedAndClosedLines: openedLines
@@ -111,6 +117,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             } else {
                 log.error('RETRY FAILED - LINES LEFT OPEN', JSON.stringify({
                     errorId: errorId,
+                    retryDataKey: retryDataKey,
                     shopifyOrderId: shopifyOrderId,
                     salesOrderId: salesOrderId,
                     openedLines: openedLines,
@@ -127,7 +134,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         var match = message.match(/Shopify order #(\d+)/);
         if (match && match[1]) return match[1];
 
-        if (err.id) return String(err.id);
+        if (err.traceKey) return String(err.traceKey);
         if (err.record && err.record.id) return String(err.record.id);
         if (err.data && err.data.id) return String(err.data.id);
 
@@ -202,30 +209,36 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             });
 
             log.audit('SALES ORDER SAVED AFTER OPENING LINES', salesOrderId);
+        } else {
+            log.audit('NO CLOSED LINES FOUND TO OPEN', salesOrderId);
         }
 
         return openedLines;
     }
 
-    function retryCeligoError(errorId) {
+    function retryCeligoError(errorObj) {
         try {
-            if (!errorId) {
+            var retryDataKey = errorObj.retryDataKey;
+            var errorId = errorObj.errorId || errorObj.id || errorObj._id;
+
+            if (!retryDataKey) {
                 return {
                     success: false,
-                    message: 'Missing Celigo error ID'
+                    message: 'Missing retryDataKey',
+                    errorId: errorId
                 };
             }
 
             var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry';
 
             var payload = {
-                errors: [String(errorId)]
+                retryDataKeys: [String(retryDataKey)]
             };
 
             log.audit('RETRY URL', url);
             log.audit('RETRY PAYLOAD', JSON.stringify(payload));
 
-            var response = https.put({
+            var response = https.post({
                 url: url,
                 headers: getHeaders(),
                 body: JSON.stringify(payload)
@@ -235,7 +248,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             log.debug('RETRY RESPONSE BODY', response.body);
 
             return {
-                success: String(response.code) == '200' || String(response.code) == '204',
+                success: response.code >= 200 && response.code < 300,
                 code: response.code,
                 body: response.body
             };
