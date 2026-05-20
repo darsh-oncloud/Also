@@ -11,7 +11,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
     var SHOPIFY_ORDER_FIELD = 'custbody_celigo_etail_order_id';
 
-    var MAX_RETRY_CHECKS = 12;
+    var MAX_RETRY_CHECKS = 8; // 8 * 5 sec = 40 sec
 
     function getInputData() {
         try {
@@ -23,7 +23,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
                 var code = err.code || '';
 
                 if ((code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1) && err.retry != 'true') {
-                    return [err];
+                    return [err]; // only 1 error per run
                 }
             }
 
@@ -61,8 +61,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             if (!retryResult.success || !retryResult.retryJobId) {
                 closeOnlyOpenedLines(salesOrderId, openedLines);
                 log.error('RETRY API FAILED - LINES CLOSED BACK', JSON.stringify({
-                    errorId: errorId,
-                    retryDataKey: retryDataKey,
                     salesOrderId: salesOrderId,
                     openedLines: openedLines,
                     retryResult: retryResult
@@ -72,17 +70,27 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             var retryFinishStatus = waitUntilRetryJobFinished(retryResult.retryJobId);
 
-            closeOnlyOpenedLines(salesOrderId, openedLines);
+            if (retryFinishStatus.finished === true) {
+                closeOnlyOpenedLines(salesOrderId, openedLines);
 
-            log.audit('PROCESS COMPLETE', JSON.stringify({
-                shopifyOrderId: shopifyOrderId,
-                salesOrderId: salesOrderId,
-                originalErrorId: errorId,
-                retryDataKey: retryDataKey,
-                retryJobId: retryResult.retryJobId,
-                openedAndClosedLines: openedLines,
-                retryStatus: retryFinishStatus
-            }));
+                log.audit('PROCESS COMPLETE', JSON.stringify({
+                    shopifyOrderId: shopifyOrderId,
+                    salesOrderId: salesOrderId,
+                    originalErrorId: errorId,
+                    retryDataKey: retryDataKey,
+                    retryJobId: retryResult.retryJobId,
+                    openedAndClosedLines: openedLines,
+                    retryStatus: retryFinishStatus
+                }));
+            } else {
+                log.error('RETRY NOT FINISHED - LINES LEFT OPEN', JSON.stringify({
+                    shopifyOrderId: shopifyOrderId,
+                    salesOrderId: salesOrderId,
+                    retryJobId: retryResult.retryJobId,
+                    openedLines: openedLines,
+                    retryStatus: retryFinishStatus
+                }));
+            }
 
         } catch (e) {
             try {
@@ -107,10 +115,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             };
         }
 
-        var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry';
-
         var response = https.post({
-            url: url,
+            url: 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry',
             headers: getHeaders(),
             body: JSON.stringify({
                 retryDataKeys: [String(retryDataKey)]
@@ -134,6 +140,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         var lastStatus = {};
 
         for (var i = 0; i < MAX_RETRY_CHECKS; i++) {
+            waitFiveSeconds();
+
             lastStatus = getRetryJobStatus(retryJobId);
 
             if (lastStatus.finished === true) {
@@ -143,22 +151,30 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
         return {
             finished: false,
-            result: 'not_finished_after_checks',
+            result: 'not_finished_after_40_seconds',
             lastStatus: lastStatus
         };
     }
 
-    function getRetryJobStatus(retryJobId) {
-        var url = 'https://api.integrator.io/v1/jobs/' + retryJobId;
+    function waitFiveSeconds() {
+        try {
+            https.get({
+                url: 'https://httpbin.org/delay/5'
+            });
+        } catch (e) {
+            // ignore wait error
+        }
+    }
 
+    function getRetryJobStatus(retryJobId) {
         var response = https.get({
-            url: url,
+            url: 'https://api.integrator.io/v1/jobs/' + retryJobId,
             headers: getHeaders()
         });
 
         if (response.code < 200 || response.code >= 300) {
             return {
-                finished: true,
+                finished: false,
                 result: 'job_status_check_failed',
                 code: response.code,
                 body: response.body
@@ -212,10 +228,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
     }
 
     function getCeligoErrors() {
-        var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors';
-
         var response = https.get({
-            url: url,
+            url: 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors',
             headers: getHeaders()
         });
 
@@ -302,6 +316,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         if (!openedLines || !openedLines.length) return;
 
         var lineMap = {};
+
         for (var i = 0; i < openedLines.length; i++) {
             lineMap[String(openedLines[i])] = true;
         }
