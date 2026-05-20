@@ -11,6 +11,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
     var SHOPIFY_ORDER_FIELD = 'custbody_celigo_etail_order_id';
 
+    var WAIT_SECONDS = 5;
+    var MAX_WAIT_SECONDS = 45;
+
     function getInputData() {
         try {
             var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/errors';
@@ -37,16 +40,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             for (var i = 0; i < errors.length; i++) {
                 var err = errors[i];
-
                 var msg = err.message || err.errorMessage || '';
                 var code = err.code || err.errorCode || '';
-
-                log.debug('CHECKING ERROR', JSON.stringify({
-                    errorId: err.errorId || err.id || err._id,
-                    retryDataKey: err.retryDataKey,
-                    code: code,
-                    message: msg
-                }));
 
                 if (code == 'closed_salesorder' || msg.indexOf('already "Closed"') > -1 || msg.indexOf('closed') > -1) {
                     log.audit('MATCHING CLOSED ORDER ERROR FOUND', JSON.stringify(err));
@@ -80,12 +75,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             var shopifyOrderId = getShopifyOrderId(message, err);
 
-            log.audit('SHOPIFY ORDER ID FOUND', shopifyOrderId);
-
             if (!shopifyOrderId) {
                 log.error('STOPPED - ORDER ID NOT FOUND FROM ERROR', JSON.stringify(err));
                 return;
             }
+
+            log.audit('SHOPIFY ORDER ID FOUND', shopifyOrderId);
 
             var salesOrderId = findSalesOrder(shopifyOrderId);
 
@@ -104,29 +99,201 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
             log.audit('CELIGO RETRY RESULT', JSON.stringify(retryResult));
 
-            if (retryResult.success) {
+            if (!retryResult.success || !retryResult.retryJobId) {
+                log.error('RETRY NOT STARTED - LINES LEFT OPEN', JSON.stringify({
+                    errorId: errorId,
+                    retryDataKey: retryDataKey,
+                    salesOrderId: salesOrderId,
+                    openedLines: openedLines,
+                    retryResult: retryResult
+                }));
+                return;
+            }
+
+            var finalStatus = waitForRetryJob(retryResult.retryJobId);
+
+            log.audit('FINAL RETRY JOB STATUS', JSON.stringify(finalStatus));
+
+            if (finalStatus.success === true) {
                 closeOnlyOpenedLines(salesOrderId, openedLines);
 
                 log.audit('PROCESS COMPLETE SUCCESS', JSON.stringify({
                     errorId: errorId,
                     retryDataKey: retryDataKey,
+                    retryJobId: retryResult.retryJobId,
                     shopifyOrderId: shopifyOrderId,
                     salesOrderId: salesOrderId,
                     openedAndClosedLines: openedLines
                 }));
             } else {
-                log.error('RETRY FAILED - LINES LEFT OPEN', JSON.stringify({
+                log.error('RETRY NOT SUCCESSFUL YET - LINES LEFT OPEN', JSON.stringify({
                     errorId: errorId,
                     retryDataKey: retryDataKey,
-                    shopifyOrderId: shopifyOrderId,
+                    retryJobId: retryResult.retryJobId,
                     salesOrderId: salesOrderId,
                     openedLines: openedLines,
-                    retryResult: retryResult
+                    finalStatus: finalStatus
                 }));
             }
 
         } catch (e) {
             log.error('map ERROR', e);
+        }
+    }
+
+    function retryCeligoError(errorObj) {
+        try {
+            var retryDataKey = errorObj.retryDataKey;
+            var errorId = errorObj.errorId || errorObj.id || errorObj._id;
+
+            if (!retryDataKey) {
+                return {
+                    success: false,
+                    message: 'Missing retryDataKey',
+                    errorId: errorId
+                };
+            }
+
+            var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry';
+
+            var payload = {
+                retryDataKeys: [String(retryDataKey)]
+            };
+
+            log.audit('RETRY URL', url);
+            log.audit('RETRY PAYLOAD', JSON.stringify(payload));
+
+            var response = https.post({
+                url: url,
+                headers: getHeaders(),
+                body: JSON.stringify(payload)
+            });
+
+            log.audit('RETRY RESPONSE CODE', response.code);
+            log.debug('RETRY RESPONSE BODY', response.body);
+
+            var body = {};
+            try {
+                body = JSON.parse(response.body || '{}');
+            } catch (parseErr) {
+                body = {};
+            }
+
+            return {
+                success: response.code >= 200 && response.code < 300,
+                code: response.code,
+                body: response.body,
+                retryJobId: body._id || ''
+            };
+
+        } catch (e) {
+            log.error('retryCeligoError ERROR', e);
+            return {
+                success: false,
+                message: e.message
+            };
+        }
+    }
+
+    function waitForRetryJob(retryJobId) {
+        var waited = 0;
+
+        while (waited < MAX_WAIT_SECONDS) {
+            waitSeconds(WAIT_SECONDS);
+            waited += WAIT_SECONDS;
+
+            var status = getRetryJobStatus(retryJobId);
+
+            log.audit('RETRY JOB CHECK AFTER ' + waited + ' SECONDS', JSON.stringify(status));
+
+            if (status.success === true) {
+                return status;
+            }
+
+            if (status.completed === true && status.success !== true) {
+                return status;
+            }
+        }
+
+        return {
+            success: false,
+            completed: false,
+            message: 'Retry job not completed within ' + MAX_WAIT_SECONDS + ' seconds',
+            retryJobId: retryJobId
+        };
+    }
+
+    function getRetryJobStatus(retryJobId) {
+        try {
+            var url = 'https://api.integrator.io/v1/flowJobs/' + retryJobId;
+
+            log.audit('RETRY JOB STATUS URL', url);
+
+            var response = https.get({
+                url: url,
+                headers: getHeaders()
+            });
+
+            log.audit('RETRY JOB STATUS RESPONSE CODE', response.code);
+            log.debug('RETRY JOB STATUS RESPONSE BODY', response.body);
+
+            if (response.code < 200 || response.code >= 300) {
+                return {
+                    success: false,
+                    completed: false,
+                    code: response.code,
+                    body: response.body,
+                    retryJobId: retryJobId
+                };
+            }
+
+            var body = JSON.parse(response.body || '{}');
+
+            var status = body.status || '';
+            var numSuccess = Number(body.numSuccess || 0);
+            var numError = Number(body.numError || 0);
+            var numOpenError = Number(body.numOpenError || 0);
+            var doneExporting = body.doneExporting === true;
+
+            var completed = false;
+            var success = false;
+
+            if (status == 'completed' || status == 'complete' || status == 'finished' || doneExporting === true) {
+                completed = true;
+            }
+
+            if (completed && numSuccess > 0 && numError === 0 && numOpenError === 0) {
+                success = true;
+            }
+
+            return {
+                success: success,
+                completed: completed,
+                status: status,
+                doneExporting: doneExporting,
+                numSuccess: numSuccess,
+                numError: numError,
+                numOpenError: numOpenError,
+                retryJobId: retryJobId,
+                rawBody: body
+            };
+
+        } catch (e) {
+            log.error('getRetryJobStatus ERROR', e);
+            return {
+                success: false,
+                completed: false,
+                message: e.message,
+                retryJobId: retryJobId
+            };
+        }
+    }
+
+    function waitSeconds(seconds) {
+        var endTime = new Date().getTime() + (seconds * 1000);
+
+        while (new Date().getTime() < endTime) {
+            // intentional wait
         }
     }
 
@@ -152,13 +319,17 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             columns: ['internalid', 'tranid']
         });
 
-        var result = soSearch.run().getRange({ start: 0, end: 1 });
+        var result = soSearch.run().getRange({
+            start: 0,
+            end: 1
+        });
 
         if (result && result.length) {
             log.audit('SALES ORDER MATCHED', JSON.stringify({
                 internalId: result[0].getValue('internalid'),
                 tranid: result[0].getValue('tranid')
             }));
+
             return result[0].getValue('internalid');
         }
 
@@ -172,7 +343,10 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             isDynamic: false
         });
 
-        var lineCount = soRec.getLineCount({ sublistId: 'item' });
+        var lineCount = soRec.getLineCount({
+            sublistId: 'item'
+        });
+
         var openedLines = [];
 
         for (var i = 0; i < lineCount; i++) {
@@ -216,52 +390,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         return openedLines;
     }
 
-    function retryCeligoError(errorObj) {
-        try {
-            var retryDataKey = errorObj.retryDataKey;
-            var errorId = errorObj.errorId || errorObj.id || errorObj._id;
-
-            if (!retryDataKey) {
-                return {
-                    success: false,
-                    message: 'Missing retryDataKey',
-                    errorId: errorId
-                };
-            }
-
-            var url = 'https://api.integrator.io/v1/flows/' + FLOW_ID + '/' + STEP_ID + '/retry';
-
-            var payload = {
-                retryDataKeys: [String(retryDataKey)]
-            };
-
-            log.audit('RETRY URL', url);
-            log.audit('RETRY PAYLOAD', JSON.stringify(payload));
-
-            var response = https.post({
-                url: url,
-                headers: getHeaders(),
-                body: JSON.stringify(payload)
-            });
-
-            log.audit('RETRY RESPONSE CODE', response.code);
-            log.debug('RETRY RESPONSE BODY', response.body);
-
-            return {
-                success: response.code >= 200 && response.code < 300,
-                code: response.code,
-                body: response.body
-            };
-
-        } catch (e) {
-            log.error('retryCeligoError ERROR', e);
-            return {
-                success: false,
-                message: e.message
-            };
-        }
-    }
-
     function closeOnlyOpenedLines(salesOrderId, openedLines) {
         if (!openedLines || !openedLines.length) {
             log.audit('NO LINES TO CLOSE BACK', salesOrderId);
@@ -269,6 +397,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         }
 
         var lineMap = {};
+
         for (var i = 0; i < openedLines.length; i++) {
             lineMap[String(openedLines[i])] = true;
         }
@@ -279,7 +408,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
             isDynamic: false
         });
 
-        var lineCount = soRec.getLineCount({ sublistId: 'item' });
+        var lineCount = soRec.getLineCount({
+            sublistId: 'item'
+        });
 
         for (var j = 0; j < lineCount; j++) {
             var lineKey = soRec.getSublistValue({
