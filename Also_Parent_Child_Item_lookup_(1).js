@@ -153,7 +153,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                         sublistId: ITEM_SUBLIST,
                         fieldId: 'quantity',
                         line: newLine,
-                        value: 1
+                        value: fillerParentObj.quantity
                     });
 
                     tranRec.setSublistValue({
