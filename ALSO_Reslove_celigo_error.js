@@ -84,39 +84,43 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
         log.audit('RETRY SUBMITTED COUNT', processedList.length);
 
+        waitThirtySeconds();
+
         for (var x = 0; x < processedList.length; x++) {
             var item = processedList[x];
 
-            if (!item.retryResult || !item.retryResult.success || !item.retryResult.retryJobId) {
-                closeOnlyOpenedLines(item.salesOrderId, item.openedLines);
+            var jobStatus = {};
 
-                log.error('RETRY API FAILED - CLOSED BACK', JSON.stringify(item));
-                continue;
-            }
-
-            var jobStatus = getRetryJobStatus(item.retryResult.retryJobId);
-
-            if (jobStatus.finished === true) {
-                closeOnlyOpenedLines(item.salesOrderId, item.openedLines);
-
-                log.audit('ORDER CLOSED BACK', JSON.stringify({
-                    shopifyOrderId: item.shopifyOrderId,
-                    salesOrderId: item.salesOrderId,
-                    errorId: item.errorId,
-                    retryJobId: item.retryResult.retryJobId,
-                    openedLines: item.openedLines,
-                    jobStatus: jobStatus
-                }));
+            if (item.retryResult && item.retryResult.retryJobId) {
+                jobStatus = getRetryJobStatus(item.retryResult.retryJobId);
             } else {
-                log.error('RETRY STILL RUNNING - LINES LEFT OPEN', JSON.stringify({
-                    shopifyOrderId: item.shopifyOrderId,
-                    salesOrderId: item.salesOrderId,
-                    errorId: item.errorId,
-                    retryJobId: item.retryResult.retryJobId,
-                    openedLines: item.openedLines,
-                    jobStatus: jobStatus
-                }));
+                jobStatus = {
+                    result: 'retry_api_failed_or_missing_job_id',
+                    retryResult: item.retryResult
+                };
             }
+
+            closeOnlyOpenedLines(item.salesOrderId, item.openedLines);
+
+            log.audit('ORDER CLOSED BACK', JSON.stringify({
+                shopifyOrderId: item.shopifyOrderId,
+                salesOrderId: item.salesOrderId,
+                errorId: item.errorId,
+                retryDataKey: item.retryDataKey,
+                retryJobId: item.retryResult ? item.retryResult.retryJobId : '',
+                openedLines: item.openedLines,
+                jobStatus: jobStatus
+            }));
+        }
+    }
+
+    function waitThirtySeconds() {
+        try {
+            https.get({
+                url: 'https://httpbin.org/delay/30'
+            });
+        } catch (e) {
+            log.error('WAIT FAILED - CONTINUING', e);
         }
     }
 
@@ -182,47 +186,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
 
         var body = JSON.parse(response.body || '{}');
 
-        var status = body.status || '';
-        var doneExporting = body.doneExporting === true;
-        var numSuccess = Number(body.numSuccess || 0);
-        var numError = Number(body.numError || 0);
-        var numOpenError = Number(body.numOpenError || 0);
-
-        var finished = false;
-        var result = 'running';
-
-        if (
-            status == 'completed' ||
-            status == 'complete' ||
-            status == 'finished' ||
-            status == 'done' ||
-            status == 'failed' ||
-            doneExporting === true ||
-            numSuccess > 0 ||
-            numError > 0 ||
-            numOpenError > 0
-        ) {
-            finished = true;
-        }
-
-        if (finished) {
-            if (numSuccess > 0 && numError === 0 && numOpenError === 0) {
-                result = 'retry_success';
-            } else if (numError > 0 || numOpenError > 0 || status == 'failed') {
-                result = 'retry_failed';
-            } else {
-                result = 'retry_finished_unknown';
-            }
-        }
-
         return {
-            finished: finished,
-            result: result,
-            status: status,
-            doneExporting: doneExporting,
-            numSuccess: numSuccess,
-            numError: numError,
-            numOpenError: numOpenError
+            status: body.status || '',
+            doneExporting: body.doneExporting === true,
+            numSuccess: Number(body.numSuccess || 0),
+            numError: Number(body.numError || 0),
+            numOpenError: Number(body.numOpenError || 0)
         };
     }
 
