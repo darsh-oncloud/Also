@@ -125,10 +125,11 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                         continue;
                     }
 
-                    if (isFillerAlreadyAdded(tranRec, fillerParentObj.parentItemId, fillerItemId)) {
+                    if (isFillerAlreadyAdded(tranRec, fillerParentObj.parentItemId, fillerItemId, fillerParentObj.quantity)) {
                         log.debug('BEFORE SUBMIT FILLER ITEM SKIPPED - ALREADY EXISTS', {
                             parentItem: fillerParentObj.parentItemId,
-                            fillerItem: fillerItemId
+                            fillerItem: fillerItemId,
+                            quantity: fillerParentObj.quantity
                         });
                         continue;
                     }
@@ -189,6 +190,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     log.debug('BEFORE SUBMIT FILLER ITEM ADDED', {
                         parentItem: fillerParentObj.parentItemId,
                         fillerItem: fillerItemId,
+                        quantity: fillerParentObj.quantity,
                         line: newLine
                     });
                 }
@@ -720,7 +722,7 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
         return json;
     }
 
-    function isFillerAlreadyAdded(tranRec, parentItemId, fillerItemId) {
+    function isFillerAlreadyAdded(tranRec, parentItemId, fillerItemId, parentQty) {
         var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
 
         for (var i = 0; i < lineCount; i++) {
@@ -742,10 +744,17 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
                 line: i
             }) || '');
 
+            var lineQty = Number(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'quantity',
+                line: i
+            }) || 0);
+
             if (
                 lineItemId === String(fillerItemId) &&
                 lineParentItemId === String(parentItemId) &&
-                lineType === String(TYPE_FILLER)
+                lineType === String(TYPE_FILLER) &&
+                sameNumber(lineQty, parentQty)
             ) {
                 return true;
             }
