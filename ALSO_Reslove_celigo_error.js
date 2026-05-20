@@ -103,31 +103,29 @@ define(['N/https', 'N/search', 'N/record', 'N/log'], function (https, search, re
         return '';
     }
 
-    function getCeligoErrors(importId) {
-        var url = API_BASE_URL + '/errors?filter=' + encodeURIComponent(JSON.stringify({
-            _flowId: FLOW_ID,
-            _expOrImpId: importId
-        }));
+function getCeligoErrors(importId) {
 
-        log.audit('ERROR API URL', url);
+    var url = API_BASE_URL + '/imports/' + importId + '/errors';
 
-        var response = https.get({
-            url: url,
-            headers: getHeaders()
-        });
+    log.audit('ERROR API URL', url);
 
-        log.audit('ERROR API RESPONSE CODE', response.code);
-        log.debug('ERROR API RESPONSE BODY', response.body);
+    var response = https.get({
+        url: url,
+        headers: getHeaders()
+    });
 
-        if (response.code < 200 || response.code >= 300) {
-            log.error('FAILED TO GET CELIGO ERRORS', response.body);
-            return [];
-        }
+    log.audit('ERROR API RESPONSE CODE', response.code);
+    log.debug('ERROR API RESPONSE BODY', response.body);
 
-        var body = JSON.parse(response.body || '{}');
-
-        return body.errors || body.data || body.results || [];
+    if (response.code < 200 || response.code >= 300) {
+        log.error('FAILED TO GET CELIGO ERRORS', response.body);
+        return [];
     }
+
+    var body = JSON.parse(response.body || '{}');
+
+    return body.errors || body.data || body.results || body || [];
+}
 
     function map(context) {
         try {
