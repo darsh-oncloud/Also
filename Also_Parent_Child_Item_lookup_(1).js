@@ -933,7 +933,7 @@ log.debug('DEFAULT OFF BIKE UPDATED', {
 
         lineItemType = lineItemType ? String(lineItemType) : '';
 
-        return lineItemType === 'InvtPart' || lineItemType === 'NonInvtPart';
+        return lineItemType === 'InvtPart' || lineItemType === 'NonInvtPart' || lineItemType === 'Assembly';
     }
 
     return {
