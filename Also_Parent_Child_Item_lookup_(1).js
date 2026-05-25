@@ -852,7 +852,14 @@ log.audit('SUMMARY', {
 function updateDiscountRemovedCheckbox(tranRec, soId) {
     try {
         var soTotal = getSalesOrderTotal(soId);
-        var depositTotal = getCustomerDepositTotal(soId);
+        var depositData = getCustomerDepositTotal(soId);
+
+        if (!depositData.found) {
+            log.debug('Discount Removed Skipped', 'No Customer Deposit found for SO: ' + soId);
+            return false;
+        }
+
+        var depositTotal = depositData.total;
 
         var diff = Math.abs(soTotal - depositTotal);
         var diffCents = Math.round(diff * 100);
