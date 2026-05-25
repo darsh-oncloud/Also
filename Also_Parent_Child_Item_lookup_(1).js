@@ -14,6 +14,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var MERCH_ITEM_FIELD = 'custitem_merch_item';
     var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
     var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
+    var DISCOUNT_REMOVED_FIELD = 'custbody_discount_removed';
 
     // list values
     var TYPE_PARENT = '1';
@@ -481,8 +482,13 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
               setTypeField(tranRec, i, TYPE_MERCH);
               setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                 hasChanges = true;
-
             }
+
+if (recType === 'salesorder') {
+    if (updateDiscountRemovedCheckbox(tranRec, tranId)) {
+        hasChanges = true;
+    }
+}
           
 log.audit('SUMMARY', {
     transactionId: tranId,
@@ -843,6 +849,81 @@ log.audit('SUMMARY', {
         return lineItemType === 'InvtPart' || lineItemType === 'NonInvtPart' || lineItemType === 'Assembly';
     }
 
+function updateDiscountRemovedCheckbox(tranRec, soId) {
+    try {
+        var soTotal = getSalesOrderTotal(soId);
+        var depositTotal = getCustomerDepositTotal(soId);
+
+        var diff = Math.abs(soTotal - depositTotal);
+        var diffCents = Math.round(diff * 100);
+
+        var shouldCheck = diffCents >= 5000 && diffCents % 5000 === 0;
+
+        var currentValue = tranRec.getValue({
+            fieldId: DISCOUNT_REMOVED_FIELD
+        });
+
+        if (currentValue !== shouldCheck) {
+            tranRec.setValue({
+                fieldId: DISCOUNT_REMOVED_FIELD,
+                value: shouldCheck
+            });
+            return true;
+        }
+
+        return false;
+
+    } catch (e) {
+        log.error('updateDiscountRemovedCheckbox Error', e);
+        return false;
+    }
+}
+
+function getSalesOrderTotal(soId) {
+    var total = 0;
+
+    search.create({
+        type: 'salesorder',
+        settings: [{ name: 'consolidationtype', value: 'ACCTTYPE' }],
+        filters: [
+            ['type', 'anyof', 'SalesOrd'],
+            'AND',
+            ['internalidnumber', 'equalto', soId],
+            'AND',
+            ['mainline', 'is', 'T']
+        ],
+        columns: [search.createColumn({ name: 'total' })]
+    }).run().each(function(result) {
+        total = toNumber(result.getValue({ name: 'total' }));
+        return false;
+    });
+
+    return total;
+}
+
+function getCustomerDepositTotal(soId) {
+    var total = 0;
+
+    search.create({
+        type: 'customerdeposit',
+        settings: [{ name: 'consolidationtype', value: 'ACCTTYPE' }],
+        filters: [
+            ['type', 'anyof', 'CustDep'],
+            'AND',
+            ['mainline', 'is', 'T'],
+            'AND',
+            ['salesorder', 'anyof', soId]
+        ],
+        columns: [search.createColumn({ name: 'total' })]
+    }).run().each(function(result) {
+        total += toNumber(result.getValue({ name: 'total' }));
+        return true;
+    });
+
+    return total;
+}
+
+  
     return {
         beforeSubmit: beforeSubmit,
         afterSubmit: afterSubmit
