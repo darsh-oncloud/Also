@@ -208,6 +208,20 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var recType = context.newRecord.type;
             if (!tranId) return;
 
+          var giftCardId = context.newRecord.getValue({
+              fieldId: 'custbody_celigo_shopify_giftcard_id'
+          });
+
+          if (giftCardId) {
+              record.submitFields({
+                  type: record.Type.SALES_ORDER,
+                  id: tranId,
+                  values: {
+                     custbody_discount_removed: true
+                  }
+              });
+           }
+
             if (recType === 'purchaseorder') {
                 log.debug('START', 'PO Id: ' + tranId);
 
