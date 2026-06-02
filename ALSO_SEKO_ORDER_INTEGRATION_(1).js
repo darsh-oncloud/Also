@@ -2,9 +2,12 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
+define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record, log, runtime) {
 
-    var SAVED_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status'; //new mech logic
+    var SAVED_SEARCH_ID = '';
+
+    var SO_SEARCH_ID = 'customsearch_also_slaes_order_3pl_status';
+    var TO_SEARCH_ID = 'customsearch_also_to_line_details';
 
     var BODY_STATUS_FIELD = 'custbody_3pl_export_status';
     var LINE_STATUS_FIELD = 'custcol_3pl_export_status';
@@ -16,22 +19,37 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     var PC_PARENT = '1';
     var PC_COMPONENT = '2';
     var PC_ADDON = '3';
-    var PC_MERCH = '4'; // update later with actual custom list value
+    var PC_MERCH = '4';
+    var PC_FILLER = '5';
 
-    var STATUS_READY = '1';              // Ready To Send
-    var STATUS_SENT = '2';               // Sent
-    var STATUS_ERROR = '3';              // Error
-    var STATUS_NOT_RELEASED = '4';       // Not Released
-    var STATUS_PARTIAL_READY = '5';      // Partially Ready
-    var STATUS_PARTIAL_SENT = '6';       // Partially Sent
-    var STATUS_FULFILLED = '7';          // Fulfilled
-    var STATUS_PARTIAL_FULFILLED = '8';  // Partially Fulfilled
-    var STATUS_HOLD = '9';               // Hold
+    var STATUS_READY = '1';
+    var STATUS_SENT = '2';
+    var STATUS_ERROR = '3';
+    var STATUS_NOT_RELEASED = '4';
+    var STATUS_PARTIAL_READY = '6';
+    var STATUS_PARTIAL_SENT = '7';
+    var STATUS_FULFILLED = '8';
+    var STATUS_PARTIAL_FULFILLED = '9';
+    var STATUS_HOLD = '10';
 
-    var SEKO_LOCATION_ID = '16';
+    var SEKO_LOCATION_ID = '7';
     var IGNORE_ITEM_ID = '907';
 
+    function getScriptSearchId() {
+        var searchId = runtime.getCurrentScript().getParameter({
+            name: 'custscript_3pl_saved_search'
+        });
+
+        return String(searchId || '').trim();
+    }
+
     function getInputData() {
+        SAVED_SEARCH_ID = getScriptSearchId();
+
+        if (!SAVED_SEARCH_ID) {
+            throw 'Missing required script parameter: custscript_3pl_saved_search';
+        }
+
         log.audit('getInputData', 'Loading saved search: ' + SAVED_SEARCH_ID);
 
         return search.load({
@@ -42,27 +60,27 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
     function map(context) {
         try {
             var row = JSON.parse(context.value);
-            var soId = '';
+            var recId = '';
 
             if (row.values && row.values['GROUP(internalid)']) {
-                soId = String(row.values['GROUP(internalid)'].value || row.values['GROUP(internalid)'] || '');
+                recId = String(row.values['GROUP(internalid)'].value || row.values['GROUP(internalid)'] || '');
             } else if (row.values && row.values.internalid) {
-                soId = String(row.values.internalid.value || row.values.internalid || '');
+                recId = String(row.values.internalid.value || row.values.internalid || '');
             } else if (row.id) {
-                soId = String(row.id || '');
+                recId = String(row.id || '');
             }
 
-            if (!soId) {
+            if (!recId) {
                 log.error('MAP ERROR', {
-                    message: 'Sales Order internal id not found in saved search result',
+                    message: 'Transaction internal id not found in saved search result',
                     row: context.value
                 });
                 return;
             }
 
             context.write({
-                key: soId,
-                value: soId
+                key: recId,
+                value: recId
             });
 
         } catch (e) {
@@ -72,6 +90,21 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
 
     function reduce(context) {
         try {
+            SAVED_SEARCH_ID = getScriptSearchId();
+
+            if (SAVED_SEARCH_ID === TO_SEARCH_ID) {
+                processTransferOrder(context.key);
+                return;
+            }
+
+            if (SAVED_SEARCH_ID !== SO_SEARCH_ID) {
+                log.error('UNKNOWN SEARCH ID', {
+                    searchId: SAVED_SEARCH_ID,
+                    recordId: context.key
+                });
+                return;
+            }
+
             var soId = context.key;
 
             log.audit('REDUCE START', {
@@ -94,6 +127,10 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                 bodyStatus === STATUS_HOLD ||
                 bodyStatus === STATUS_FULFILLED
             ) {
+                log.debug('SKIP BODY STATUS', {
+                    soId: soId,
+                    bodyStatus: bodyStatus
+                });
                 return;
             }
 
@@ -164,26 +201,11 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     line: i
                 }) || '');
 
-                var isEligibleLine = isValidForStatus(locationId, itemId);
-
-                if (!isEligibleLine) {
+                if (!isValidForStatus(locationId, itemId)) {
                     continue;
                 }
 
                 eligibleLineByLineKey[lineUniqueKey] = true;
-
-                var lineObj = {
-                    soId: soId,
-                    lineUniqueKey: lineUniqueKey,
-                    itemId: itemId,
-                    qty: qty,
-                    qtyCommitted: qtyCommitted,
-                    qtyFulfilled: qtyFulfilled,
-                    lineStatus: lineStatus,
-                    parentComp: parentComp,
-                    parentItemId: parentItemId,
-                    locationId: locationId
-                };
 
                 if (
                     lineStatus === STATUS_SENT ||
@@ -199,6 +221,19 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     continue;
                 }
 
+                var lineObj = {
+                    soId: soId,
+                    lineUniqueKey: lineUniqueKey,
+                    itemId: itemId,
+                    qty: qty,
+                    qtyCommitted: qtyCommitted,
+                    qtyFulfilled: qtyFulfilled,
+                    lineStatus: lineStatus,
+                    parentComp: parentComp,
+                    parentItemId: parentItemId,
+                    locationId: locationId
+                };
+
                 if (parentComp === PC_PARENT) {
                     if (!parentGroups[itemId]) {
                         parentGroups[itemId] = {
@@ -208,7 +243,8 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     }
                     parentGroups[itemId].parentLines.push(lineObj);
 
-                } else if (parentComp === PC_COMPONENT) {
+               // } else if (parentComp === PC_COMPONENT) {
+               } else if (parentComp === PC_COMPONENT || parentComp === PC_FILLER) {   
                     if (!parentItemId) {
                         addonLines.push(lineObj);
                     } else {
@@ -234,111 +270,35 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                 if (!parentGroups.hasOwnProperty(parentItemKey)) continue;
 
                 var grp = parentGroups[parentItemKey];
-                var c = 0;
-                var minAvailable = null;
-                var minCommitted = null;
-                var groupTarget = '';
+                var groupEval = evaluateParentGroup(grp);
 
-                if (grp.componentLines.length > 0 && grp.parentLines.length > 0) {
-                    var parentQty = Number(grp.parentLines[0].qty || 0);
+                minCommittedByParentItem[parentItemKey] = groupEval.minCommitted;
 
-                    for (c = 0; c < grp.componentLines.length; c++) {
-                        var child = grp.componentLines[c];
-                        var childAvailable = Number(child.qtyCommitted || 0) + Number(child.qtyFulfilled || 0);
-                        var childCommitted = Number(child.qtyCommitted || 0);
+                if (groupEval.target === STATUS_READY || groupEval.target === STATUS_PARTIAL_READY) {
+                    allowAddonStatusUpdate = true;
+                }
 
-                        if (minAvailable === null || childAvailable < minAvailable) {
-                            minAvailable = childAvailable;
-                        }
-
-                        if (minCommitted === null || childCommitted < minCommitted) {
-                            minCommitted = childCommitted;
-                        }
-                    }
-
-                    minCommittedByParentItem[parentItemKey] = Number(minCommitted || 0);
-
-                    if (Number(minAvailable || 0) > 0) {
-                        if (Number(minAvailable) >= parentQty) {
-                            groupTarget = STATUS_READY;
-                        } else {
-                            groupTarget = STATUS_PARTIAL_READY;
-                        }
-                    }
-
-                    if (groupTarget === STATUS_READY || groupTarget === STATUS_PARTIAL_READY) {
-                        allowAddonStatusUpdate = true;
-                    }
-
-                    if (groupTarget) {
-                        for (c = 0; c < grp.parentLines.length; c++) {
-                            targetByLineKey[String(grp.parentLines[c].lineUniqueKey)] = groupTarget;
-                            countForHeaderByLineKey[String(grp.parentLines[c].lineUniqueKey)] = true;
-                        }
-                        for (c = 0; c < grp.componentLines.length; c++) {
-                            targetByLineKey[String(grp.componentLines[c].lineUniqueKey)] = groupTarget;
-                            countForHeaderByLineKey[String(grp.componentLines[c].lineUniqueKey)] = true;
-                        }
-                    } else {
-                        for (c = 0; c < grp.parentLines.length; c++) {
-                            countForHeaderByLineKey[String(grp.parentLines[c].lineUniqueKey)] = true;
-
-                            if (
-                                String(grp.parentLines[c].lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
-                                String(grp.parentLines[c].lineStatus || '') === STATUS_PARTIAL_SENT
-                            ) {
-                                targetByLineKey[String(grp.parentLines[c].lineUniqueKey)] = String(grp.parentLines[c].lineStatus || '');
-                            }
-                        }
-
-                        for (c = 0; c < grp.componentLines.length; c++) {
-                            countForHeaderByLineKey[String(grp.componentLines[c].lineUniqueKey)] = true;
-
-                            if (
-                                String(grp.componentLines[c].lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
-                                String(grp.componentLines[c].lineStatus || '') === STATUS_PARTIAL_SENT
-                            ) {
-                                targetByLineKey[String(grp.componentLines[c].lineUniqueKey)] = String(grp.componentLines[c].lineStatus || '');
-                            }
-                        }
-                    }
-
+                if (groupEval.target) {
+                    markGroupLines(grp.parentLines, groupEval.target, targetByLineKey, countForHeaderByLineKey);
+                    markGroupLines(grp.componentLines, groupEval.target, targetByLineKey, countForHeaderByLineKey);
                 } else {
-                    if (grp.parentLines.length > 0) {
-                        minCommittedByParentItem[parentItemKey] = 0;
-                    }
-
-                    for (c = 0; c < grp.parentLines.length; c++) {
-                        countForHeaderByLineKey[String(grp.parentLines[c].lineUniqueKey)] = true;
-
-                        var parentLine = grp.parentLines[c];
-                        if (
-                            String(parentLine.lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
-                            String(parentLine.lineStatus || '') === STATUS_PARTIAL_SENT
-                        ) {
-                            targetByLineKey[String(parentLine.lineUniqueKey)] = String(parentLine.lineStatus || '');
-                        }
-                    }
-
-                    for (c = 0; c < grp.componentLines.length; c++) {
-                        countForHeaderByLineKey[String(grp.componentLines[c].lineUniqueKey)] = true;
-                        targetByLineKey[String(grp.componentLines[c].lineUniqueKey)] = getRegularTarget(grp.componentLines[c]);
-                    }
+                    preserveExistingPartialStatuses(grp.parentLines, targetByLineKey, countForHeaderByLineKey);
+                    preserveExistingPartialStatuses(grp.componentLines, targetByLineKey, countForHeaderByLineKey);
                 }
             }
 
             if (allowAddonStatusUpdate) {
                 for (i = 0; i < addonLines.length; i++) {
-                    var singleAddonLine = addonLines[i];
-                    targetByLineKey[String(singleAddonLine.lineUniqueKey)] = getRegularTarget(singleAddonLine);
-                    countForHeaderByLineKey[String(singleAddonLine.lineUniqueKey)] = true;
+                    var addonTarget = getRegularTarget(addonLines[i]);
+                    targetByLineKey[String(addonLines[i].lineUniqueKey)] = addonTarget;
+                    countForHeaderByLineKey[String(addonLines[i].lineUniqueKey)] = true;
                 }
             }
 
             for (i = 0; i < merchLines.length; i++) {
-                var merchLine = merchLines[i];
-                targetByLineKey[String(merchLine.lineUniqueKey)] = getRegularTarget(merchLine);
-                countForHeaderByLineKey[String(merchLine.lineUniqueKey)] = true;
+                var merchTarget = getRegularTarget(merchLines[i]);
+                targetByLineKey[String(merchLines[i].lineUniqueKey)] = merchTarget;
+                countForHeaderByLineKey[String(merchLines[i].lineUniqueKey)] = true;
             }
 
             var changed = false;
@@ -346,58 +306,58 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
             var hasPartial = false;
             var hasBlankCounted = false;
             var hasCountedLines = false;
-            var lineNum = 0;
 
-            for (lineNum = 0; lineNum < lineCount; lineNum++) {
+            for (i = 0; i < lineCount; i++) {
                 var luk = String(soRec.getSublistValue({
                     sublistId: 'item',
                     fieldId: 'lineuniquekey',
-                    line: lineNum
+                    line: i
                 }) || '');
 
                 if (!eligibleLineByLineKey[luk]) {
                     continue;
                 }
 
-                var currentLineStatus = String(soRec.getSublistValue({
-                    sublistId: 'item',
-                    fieldId: LINE_STATUS_FIELD,
-                    line: lineNum
-                }) || '');
-
-                var currentCommittedQty = Number(soRec.getSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'quantitycommitted',
-                    line: lineNum
-                }) || 0);
-
                 var currentParentComp = String(soRec.getSublistValue({
                     sublistId: 'item',
                     fieldId: PARENT_COMP_FIELD,
-                    line: lineNum
+                    line: i
                 }) || '');
 
                 if (!currentParentComp) {
                     continue;
                 }
 
+                var currentLineStatus = String(soRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: LINE_STATUS_FIELD,
+                    line: i
+                }) || '');
+
+                var currentCommittedQty = Number(soRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'quantitycommitted',
+                    line: i
+                }) || 0);
+
                 var currentItemId = String(soRec.getSublistValue({
                     sublistId: 'item',
                     fieldId: 'item',
-                    line: lineNum
+                    line: i
                 }) || '');
 
                 var currentParentItemId = String(soRec.getSublistValue({
                     sublistId: 'item',
                     fieldId: COMPONENT_PARENT_FIELD,
-                    line: lineNum
+                    line: i
                 }) || '');
 
                 var exportQtyToSet = currentCommittedQty;
 
                 if (currentParentComp === PC_PARENT) {
                     exportQtyToSet = Number(minCommittedByParentItem[currentItemId] || 0);
-                } else if (currentParentComp === PC_COMPONENT) {
+              //  } else if (currentParentComp === PC_COMPONENT) {
+                } else if (currentParentComp === PC_COMPONENT || currentParentComp === PC_FILLER) {  
                     exportQtyToSet = Number(minCommittedByParentItem[currentParentItemId] || 0);
                 } else {
                     exportQtyToSet = currentCommittedQty;
@@ -406,14 +366,14 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                 var currentExportQty = Number(soRec.getSublistValue({
                     sublistId: 'item',
                     fieldId: EXPORT_QTY_FIELD,
-                    line: lineNum
+                    line: i
                 }) || 0);
 
                 if (currentExportQty !== exportQtyToSet) {
                     soRec.setSublistValue({
                         sublistId: 'item',
                         fieldId: EXPORT_QTY_FIELD,
-                        line: lineNum,
+                        line: i,
                         value: exportQtyToSet
                     });
                     changed = true;
@@ -432,7 +392,7 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     soRec.setSublistValue({
                         sublistId: 'item',
                         fieldId: LINE_STATUS_FIELD,
-                        line: lineNum,
+                        line: i,
                         value: target || ''
                     });
                     changed = true;
@@ -460,7 +420,10 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
             } else if (hasReady || hasPartial) {
                 newBodyStatus = STATUS_PARTIAL_READY;
             } else {
-                if (String(bodyStatus) === STATUS_PARTIAL_SENT || String(bodyStatus) === STATUS_PARTIAL_FULFILLED) {
+                if (
+                    String(bodyStatus) === STATUS_PARTIAL_SENT ||
+                    String(bodyStatus) === STATUS_PARTIAL_FULFILLED
+                ) {
                     newBodyStatus = bodyStatus;
                 } else {
                     newBodyStatus = '';
@@ -485,14 +448,253 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
                     soId: soId,
                     saveId: saveId
                 });
+            } else {
+                log.debug('NO CHANGES', {
+                    soId: soId
+                });
             }
 
         } catch (e) {
             log.error('REDUCE ERROR', {
-                soId: context.key,
+                id: context.key,
                 message: e.message,
                 stack: e.stack
             });
+        }
+    }
+
+    function processTransferOrder(toId) {
+        try {
+            log.audit('TO REDUCE START', { toId: toId });
+
+            var toRec = record.load({
+                type: record.Type.TRANSFER_ORDER,
+                id: toId,
+                isDynamic: false
+            });
+
+            var bodyStatus = String(toRec.getValue({
+                fieldId: BODY_STATUS_FIELD
+            }) || '');
+
+            if (
+                bodyStatus === STATUS_SENT ||
+                bodyStatus === STATUS_ERROR ||
+                bodyStatus === STATUS_HOLD ||
+                bodyStatus === STATUS_FULFILLED
+            ) {
+                log.debug('SKIP TO BODY STATUS', {
+                    toId: toId,
+                    bodyStatus: bodyStatus
+                });
+                return;
+            }
+
+            var lineCount = toRec.getLineCount({ sublistId: 'item' });
+
+            var changed = false;
+            var hasEligibleLine = false;
+            var hasAnyCommitted = false;
+            var allLinesFullyCommitted = true;
+
+            for (var i = 0; i < lineCount; i++) {
+
+                var itemId = String(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'item',
+                    line: i
+                }) || '');
+
+                if (itemId === IGNORE_ITEM_ID) {
+                    continue;
+                }
+
+                var qty = Number(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'quantity',
+                    line: i
+                }) || 0);
+
+                var qtyCommitted = Number(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'quantitycommitted',
+                    line: i
+                }) || 0);
+
+                var currentLineStatus = String(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: LINE_STATUS_FIELD,
+                    line: i
+                }) || '');
+
+                if (
+                    currentLineStatus === STATUS_SENT ||
+                    currentLineStatus === STATUS_ERROR ||
+                    currentLineStatus === STATUS_HOLD ||
+                    currentLineStatus === STATUS_FULFILLED
+                ) {
+                    continue;
+                }
+
+                hasEligibleLine = true;
+
+                var targetLineStatus = '';
+
+                if (qtyCommitted > 0) {
+                    hasAnyCommitted = true;
+                }
+
+                if (qty > 0 && qtyCommitted >= qty) {
+                    targetLineStatus = STATUS_READY;
+                } else if (qtyCommitted > 0) {
+                    targetLineStatus = STATUS_PARTIAL_READY;
+                    allLinesFullyCommitted = false;
+                } else {
+                    targetLineStatus = '';
+                    allLinesFullyCommitted = false;
+                }
+
+                if (currentLineStatus !== targetLineStatus) {
+                    toRec.setSublistValue({
+                        sublistId: 'item',
+                        fieldId: LINE_STATUS_FIELD,
+                        line: i,
+                        value: targetLineStatus
+                    });
+                    changed = true;
+                }
+
+                var currentExportQty = Number(toRec.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: EXPORT_QTY_FIELD,
+                    line: i
+                }) || 0);
+
+                if (currentExportQty !== qtyCommitted) {
+                    toRec.setSublistValue({
+                        sublistId: 'item',
+                        fieldId: EXPORT_QTY_FIELD,
+                        line: i,
+                        value: qtyCommitted
+                    });
+                    changed = true;
+                }
+            }
+
+            var newBodyStatus = '';
+
+            if (hasEligibleLine && allLinesFullyCommitted) {
+                newBodyStatus = STATUS_READY;
+            } else if (hasEligibleLine && hasAnyCommitted) {
+                newBodyStatus = STATUS_PARTIAL_READY;
+            } else {
+                newBodyStatus = '';
+            }
+
+            if (bodyStatus !== newBodyStatus) {
+                toRec.setValue({
+                    fieldId: BODY_STATUS_FIELD,
+                    value: newBodyStatus
+                });
+                changed = true;
+            }
+
+            if (changed) {
+                var saveId = toRec.save({
+                    enableSourcing: false,
+                    ignoreMandatoryFields: true
+                });
+
+                log.audit('TO SAVED', {
+                    toId: toId,
+                    saveId: saveId,
+                    newBodyStatus: newBodyStatus
+                });
+            } else {
+                log.debug('NO TO CHANGES', { toId: toId });
+            }
+
+        } catch (e) {
+            log.error('TO REDUCE ERROR', {
+                toId: toId,
+                message: e.message,
+                stack: e.stack
+            });
+        }
+    }
+
+    function evaluateParentGroup(grp) {
+        var result = {
+            target: '',
+            minCommitted: 0,
+            minAvailable: 0
+        };
+
+        if (!grp || !grp.parentLines || !grp.componentLines) {
+            return result;
+        }
+
+        if (grp.parentLines.length === 0 || grp.componentLines.length === 0) {
+            result.minCommitted = 0;
+            result.minAvailable = 0;
+            return result;
+        }
+
+        var parentQty = Number(grp.parentLines[0].qty || 0);
+        var minCommitted = null;
+        var minAvailable = null;
+        var i = 0;
+
+        for (i = 0; i < grp.componentLines.length; i++) {
+            var child = grp.componentLines[i];
+            var childCommitted = Number(child.qtyCommitted || 0);
+            var childAvailable = Number(child.qtyCommitted || 0) + Number(child.qtyFulfilled || 0);
+
+            if (minCommitted === null || childCommitted < minCommitted) {
+                minCommitted = childCommitted;
+            }
+
+            if (minAvailable === null || childAvailable < minAvailable) {
+                minAvailable = childAvailable;
+            }
+        }
+
+        result.minCommitted = Number(minCommitted || 0);
+        result.minAvailable = Number(minAvailable || 0);
+
+        if (result.minCommitted > 0) {
+            if (result.minAvailable >= parentQty) {
+                result.target = STATUS_READY;
+            } else {
+                result.target = STATUS_PARTIAL_READY;
+            }
+        }
+
+        return result;
+    }
+
+    function markGroupLines(lines, target, targetByLineKey, countForHeaderByLineKey) {
+        var i = 0;
+        for (i = 0; i < lines.length; i++) {
+            targetByLineKey[String(lines[i].lineUniqueKey)] = target;
+            countForHeaderByLineKey[String(lines[i].lineUniqueKey)] = true;
+        }
+    }
+
+    function preserveExistingPartialStatuses(lines, targetByLineKey, countForHeaderByLineKey) {
+        var i = 0;
+        for (i = 0; i < lines.length; i++) {
+            var lineObj = lines[i];
+            var luk = String(lineObj.lineUniqueKey || '');
+
+            countForHeaderByLineKey[luk] = true;
+
+            if (
+                String(lineObj.lineStatus || '') === STATUS_PARTIAL_FULFILLED ||
+                String(lineObj.lineStatus || '') === STATUS_PARTIAL_SENT
+            ) {
+                targetByLineKey[luk] = String(lineObj.lineStatus || '');
+            }
         }
     }
 
@@ -515,10 +717,16 @@ define(['N/search', 'N/record', 'N/log'], function (search, record, log) {
         var currentStatus = String(lineObj.lineStatus || '');
 
         if (committed > 0) {
-            return ((committed + fulfilled) >= qty) ? STATUS_READY : STATUS_PARTIAL_READY;
+            if ((committed + fulfilled) >= qty) {
+                return STATUS_READY;
+            }
+            return STATUS_PARTIAL_READY;
         }
 
-        if (currentStatus === STATUS_PARTIAL_FULFILLED || currentStatus === STATUS_PARTIAL_SENT) {
+        if (
+            currentStatus === STATUS_PARTIAL_FULFILLED ||
+            currentStatus === STATUS_PARTIAL_SENT
+        ) {
             return currentStatus;
         }
 
