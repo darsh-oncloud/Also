@@ -7,7 +7,7 @@
   <initonvieworupdate>T</initonvieworupdate>
   <initsavedsearchcondition></initsavedsearchcondition>
   <inittriggertype></inittriggertype>
-  <isinactive>F</isinactive>
+  <isinactive>T</isinactive>
   <islogenabled>T</islogenabled>
   <keephistory>ONLYWHENTESTING</keephistory>
   <name>ASLO | Update Item 3PL Status</name>
