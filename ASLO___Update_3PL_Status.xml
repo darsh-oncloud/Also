@@ -23,8 +23,53 @@
       <description></description>
       <donotexitworkflow>F</donotexitworkflow>
       <name>State 1</name>
-      <positionx>243</positionx>
+      <positionx>983</positionx>
       <positiony>133</positiony>
+      <workflowactions triggertype="AFTERSUBMIT">
+        <setfieldvalueaction scriptid="workflowaction290">
+          <clienttriggerfields></clienttriggerfields>
+          <conditionsavedsearch></conditionsavedsearch>
+          <contexttypes>ACTION|BANKCONNECTIVITY|BANKSTATEMENTPARSER|BUNDLEINSTALLATION|CLIENT|CSVIMPORT|CUSTOMGLLINES|CUSTOMMASSUPDATE|RECORDACTION|CUSTOMTOOL|DATASETBUILDER|DEBUGGER|EMAILCAPTURE|FICONNECTIVITY|FIPARSER|MAPREDUCE|OCRPLUGIN|OFFLINECLIENT|OTHER|PAYMENTPOSTBACK|PAYMENTGATEWAY|PLATFORMEXTENSION|PORTLET|PROMOTIONS|CONSOLRATEADJUSTOR|RESTWEBSERVICES|RESTLET|ADVANCEDREVREC|SCHEDULED|SDFINSTALLATION|SHIPPINGPARTNERS|WEBSERVICES|SUITELET|TAXCALCULATION|USEREVENT|USERINTERFACE|WORKBOOKBUILDER|WORKFLOW</contexttypes>
+          <eventtypes>CREATE|EDIT</eventtypes>
+          <field>[scriptid=custitem_3pl_status]</field>
+          <isinactive>F</isinactive>
+          <scheduledelay></scheduledelay>
+          <schedulemode>DELAY</schedulemode>
+          <schedulerecurrence></schedulerecurrence>
+          <scheduletimeofday></scheduletimeofday>
+          <scheduletimeunit></scheduletimeunit>
+          <valuechecked>F</valuechecked>
+          <valuedate></valuedate>
+          <valuefield></valuefield>
+          <valueformula></valueformula>
+          <valuejoinfield></valuejoinfield>
+          <valueselect>[scriptid=customlist_3pl_export_status.val_232986_1039693_907]</valueselect>
+          <valuetext></valuetext>
+          <valuetype>STATIC</valuetype>
+          <initcondition>
+            <formula><![CDATA[( "Old Record:Display Name" != "Display Name" OR "Old Record:Weight" != "Weight" )]]></formula>
+            <type>VISUAL_BUILDER</type>
+            <parameters>
+              <parameter>
+                <name>Old Record:Display Name</name>
+                <value>@OLDRECORD@:STDITEMDISPLAYNAME</value>
+              </parameter>
+              <parameter>
+                <name>Display Name</name>
+                <value>STDITEMDISPLAYNAME</value>
+              </parameter>
+              <parameter>
+                <name>Old Record:Weight</name>
+                <value>@OLDRECORD@:STDITEMWEIGHT</value>
+              </parameter>
+              <parameter>
+                <name>Weight</name>
+                <value>STDITEMWEIGHT</value>
+              </parameter>
+            </parameters>
+          </initcondition>
+        </setfieldvalueaction>
+      </workflowactions>
     </workflowstate>
   </workflowstates>
 </workflow>
