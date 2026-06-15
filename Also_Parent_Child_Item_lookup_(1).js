@@ -15,6 +15,13 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
     var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
 
+    // allocation strategy update based on item ALSO category
+    var ALSO_CATEGORY_FIELD = 'custitem_also_category';
+    var ALLOCATION_STRATEGY_FIELD = 'orderallocationstrategy';
+    var ALSO_CATEGORY_ALLOCATE_VALUE = '8';
+    var MERCH_ALLOCATION_STRATEGY_VALUE = '-2';
+    var DO_NOT_ALLOCATE_VALUE = '';
+
     // list values
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
@@ -296,6 +303,11 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
             var parentChildJson = getParentChildJson(lineItems);
             var itemMerchJson = getItemMerchJson(lineItems);
+            var itemAlsoCategoryJson = {};
+
+            if (recType === 'salesorder') {
+                itemAlsoCategoryJson = getItemAlsoCategoryJson(lineItems);
+            }
 
           if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
                 log.debug('STOP', 'No parent-child setup and no merch/onbike-offbike items found');
@@ -366,9 +378,8 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 clearParentField(tranRec, parentLines[i].line);
                 setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
 
+                setFulfillmentKeyFromLineUniqueKey(tranRec, parentLines[i].line);
 
-       setFulfillmentKeyFromLineUniqueKey(tranRec, parentLines[i].line);
-              
                 hasChanges = true;
             }
 
@@ -408,7 +419,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                         setTypeField(tranRec, matchedLine, TYPE_COMPONENT);
                         setFulfillmentKeyFromLineUniqueKey(tranRec, matchedLine);
-                      
+
                         usedComponentLines[matchedLine] = true;
                         hasChanges = true;
                     } else {
@@ -481,7 +492,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                     hasChanges = true;
 
-                  continue;
+                    continue;
                 }
 
                 if (itemMerchJson[lineItemId] === MERCH_OFF_BIKE_VALUE) {
@@ -492,19 +503,24 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     continue;
                 }
 
-              setTypeField(tranRec, i, TYPE_MERCH);
-              setFulfillmentKeyFromLineUniqueKey(tranRec, i);
+                setTypeField(tranRec, i, TYPE_MERCH);
+                setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                 hasChanges = true;
-
             }
-          
-log.audit('SUMMARY', {
-    transactionId: tranId,
-    recordType: recType,
-    parentCount: parentLines.length,
-    updated: hasChanges
-});
-          
+
+            if (recType === 'salesorder') {
+                if (setAllocationStrategyByAlsoCategory(tranRec, lineCount, itemAlsoCategoryJson)) {
+                    hasChanges = true;
+                }
+            }
+
+            log.audit('SUMMARY', {
+                transactionId: tranId,
+                recordType: recType,
+                parentCount: parentLines.length,
+                updated: hasChanges
+            });
+
             if (hasChanges) {
                 var savedId = tranRec.save({
                     enableSourcing: false,
@@ -605,6 +621,96 @@ log.audit('SUMMARY', {
         });
 
         return json;
+    }
+
+    function getItemAlsoCategoryJson(itemIds) {
+        var json = {};
+
+        if (!itemIds || !itemIds.length) {
+            return json;
+        }
+
+        search.create({
+            type: search.Type.ITEM,
+            filters: [
+                ['internalid', 'anyof', itemIds]
+            ],
+            columns: [
+                'internalid',
+                ALSO_CATEGORY_FIELD
+            ]
+        }).run().each(function(result) {
+            var itemId = result.getValue({ name: 'internalid' });
+            var alsoCategory = result.getValue({ name: ALSO_CATEGORY_FIELD });
+
+            itemId = itemId ? String(itemId) : '';
+            alsoCategory = alsoCategory ? String(alsoCategory) : '';
+
+            if (itemId) {
+                json[itemId] = alsoCategory;
+            }
+
+            return true;
+        });
+
+        return json;
+    }
+
+    function setAllocationStrategyByAlsoCategory(tranRec, lineCount, itemAlsoCategoryJson) {
+        var changed = false;
+
+        for (var i = 0; i < lineCount; i++) {
+            var itemId = tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'item',
+                line: i
+            });
+
+            itemId = itemId ? String(itemId) : '';
+
+            if (!itemId) {
+                continue;
+            }
+
+            if (!isAllowedItemType(tranRec, i)) {
+                continue;
+            }
+
+            var alsoCategoryValue = itemAlsoCategoryJson[itemId] || '';
+
+            var newStrategy = String(alsoCategoryValue) === ALSO_CATEGORY_ALLOCATE_VALUE
+                ? MERCH_ALLOCATION_STRATEGY_VALUE
+                : DO_NOT_ALLOCATE_VALUE;
+
+            var currentStrategy = tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: ALLOCATION_STRATEGY_FIELD,
+                line: i
+            });
+
+            currentStrategy = currentStrategy ? String(currentStrategy) : '';
+
+            if (currentStrategy !== String(newStrategy)) {
+                tranRec.setSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: ALLOCATION_STRATEGY_FIELD,
+                    line: i,
+                    value: newStrategy
+                });
+
+                log.debug('ALLOCATION STRATEGY UPDATED BY ALSO CATEGORY', {
+                    line: i,
+                    itemId: itemId,
+                    alsoCategoryValue: alsoCategoryValue,
+                    oldStrategy: currentStrategy,
+                    newStrategy: newStrategy
+                });
+
+                changed = true;
+            }
+        }
+
+        return changed;
     }
 
     function getPackagingFillerJson(itemIds) {
