@@ -28,8 +28,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
     function beforeSubmit(context) {
         try {
-            if (context.type !== context.UserEventType.CREATE &&
-                context.type !== context.UserEventType.EDIT) {
+            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) {
                 return;
             }
 
@@ -41,18 +40,23 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             }
 
             var lineItems = getLineItems(tranRec);
+
             if (!lineItems.length) {
                 log.debug('BEFORE SUBMIT STOP', 'No item lines found');
                 return;
             }
 
             var parentChildJson = getParentChildJson(lineItems);
+
             if (!hasKeys(parentChildJson)) {
                 log.debug('BEFORE SUBMIT STOP', 'No parent-child setup found');
                 return;
             }
 
-            var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
+            var lineCount = tranRec.getLineCount({
+                sublistId: ITEM_SUBLIST
+            });
+
             var parentLines = [];
             var i;
 
@@ -104,10 +108,10 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             }
 
             var packagingFillerJson = getPackagingFillerJson(parentItemIdsForFiller);
+
             log.debug('Before Submit Packaging Filler JSON', JSON.stringify(packagingFillerJson));
 
             for (i = 0; i < parentLines.length; i++) {
-
                 var fillerParentObj = parentLines[i];
                 var fillerItems = packagingFillerJson[fillerParentObj.parentItemId];
 
@@ -116,7 +120,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 }
 
                 for (var f = 0; f < fillerItems.length; f++) {
-
                     var fillerItemId = String(fillerItems[f]).replace(/\s+/g, '');
 
                     if (!fillerItemId) {
@@ -199,34 +202,49 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
     function afterSubmit(context) {
         try {
-            if (context.type !== context.UserEventType.CREATE &&
-                context.type !== context.UserEventType.EDIT) {
+            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) {
                 return;
             }
 
             var tranId = context.newRecord.id;
             var recType = context.newRecord.type;
+
             if (!tranId) return;
 
-          // var giftCardId = context.newRecord.getValue({
-          //     fieldId: 'custbody_celigo_shopify_giftcard_id'
-          // });
+            if (recType !== 'purchaseorder' && recType !== 'salesorder') {
+                return;
+            }
 
-          // if (giftCardId) {
-          //     record.submitFields({
-          //         type: record.Type.SALES_ORDER,
-          //         id: tranId,
-          //         values: {
-          //            custbody_discount_removed: true
-          //         }
-          //     });
-          //  }
+            var tranRec = record.load({
+                type: recType,
+                id: tranId,
+                isDynamic: false
+            });
+
+            // var giftCardId = tranRec.getValue({
+            //     fieldId: 'custbody_celigo_shopify_giftcard_id'
+            // });
+
+            // if (giftCardId) {
+            //     record.submitFields({
+            //         type: record.Type.SALES_ORDER,
+            //         id: tranId,
+            //         values: {
+            //             custbody_discount_removed: true
+            //         }
+            //     });
+            // }
 
             if (recType === 'purchaseorder') {
                 log.debug('START', 'PO Id: ' + tranId);
 
-                var approvalStatus = context.newRecord.getValue({ fieldId: 'approvalstatus' });
-                var vendorId = context.newRecord.getValue({ fieldId: 'entity' });
+                var approvalStatus = tranRec.getValue({
+                    fieldId: 'approvalstatus'
+                });
+
+                var vendorId = tranRec.getValue({
+                    fieldId: 'entity'
+                });
 
                 log.debug('PO Header', {
                     poId: tranId,
@@ -265,7 +283,9 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             } else if (recType === 'salesorder') {
                 log.debug('START', 'SO Id: ' + tranId);
 
-                var soStatus = context.newRecord.getValue({ fieldId: 'orderstatus' });
+                var soStatus = tranRec.getValue({
+                    fieldId: 'orderstatus'
+                });
 
                 log.debug('SO Header', {
                     soId: tranId,
@@ -282,13 +302,8 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 return;
             }
 
-            var tranRec = record.load({
-                type: recType,
-                id: tranId,
-                isDynamic: false
-            });
-
             var lineItems = getLineItems(tranRec);
+
             if (!lineItems.length) {
                 log.debug('STOP', 'No item lines found');
                 return;
@@ -297,12 +312,15 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var parentChildJson = getParentChildJson(lineItems);
             var itemMerchJson = getItemMerchJson(lineItems);
 
-          if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
+            if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
                 log.debug('STOP', 'No parent-child setup and no merch/onbike-offbike items found');
                 return;
             }
 
-            var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
+            var lineCount = tranRec.getLineCount({
+                sublistId: ITEM_SUBLIST
+            });
+
             var parentLines = [];
             var usedComponentLines = {};
             var hasChanges = false;
@@ -365,10 +383,8 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                 clearParentField(tranRec, parentLines[i].line);
                 setTypeField(tranRec, parentLines[i].line, TYPE_PARENT);
+                setFulfillmentKeyFromLineUniqueKey(tranRec, parentLines[i].line);
 
-
-       setFulfillmentKeyFromLineUniqueKey(tranRec, parentLines[i].line);
-              
                 hasChanges = true;
             }
 
@@ -408,9 +424,10 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                         setTypeField(tranRec, matchedLine, TYPE_COMPONENT);
                         setFulfillmentKeyFromLineUniqueKey(tranRec, matchedLine);
-                      
+
                         usedComponentLines[matchedLine] = true;
                         hasChanges = true;
+
                     } else {
                         log.debug('COMPONENT MATCH NOT FOUND', {
                             childItemId: childId,
@@ -470,7 +487,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 }) || '') === TYPE_FILLER) {
                     setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                     hasChanges = true;
-
                     continue;
                 }
 
@@ -480,31 +496,29 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     setTypeField(tranRec, i, TYPE_ADDON);
                     setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                     hasChanges = true;
-
-                  continue;
+                    continue;
                 }
 
                 if (itemMerchJson[lineItemId] === MERCH_OFF_BIKE_VALUE) {
                     setTypeField(tranRec, i, TYPE_MERCH);
                     setFulfillmentKeyFromLineUniqueKey(tranRec, i);
                     hasChanges = true;
-
                     continue;
                 }
 
-              setTypeField(tranRec, i, TYPE_MERCH);
-              setFulfillmentKeyFromLineUniqueKey(tranRec, i);
-                hasChanges = true;
+                setTypeField(tranRec, i, TYPE_MERCH);
+                setFulfillmentKeyFromLineUniqueKey(tranRec, i);
 
+                hasChanges = true;
             }
-          
-log.audit('SUMMARY', {
-    transactionId: tranId,
-    recordType: recType,
-    parentCount: parentLines.length,
-    updated: hasChanges
-});
-          
+
+            log.audit('SUMMARY', {
+                transactionId: tranId,
+                recordType: recType,
+                parentCount: parentLines.length,
+                updated: hasChanges
+            });
+
             if (hasChanges) {
                 var savedId = tranRec.save({
                     enableSourcing: false,
@@ -512,7 +526,6 @@ log.audit('SUMMARY', {
                 });
 
                 log.audit('TRANSACTION SAVED', recType + ' updated successfully: ' + savedId);
-
             } else {
                 log.debug('NO CHANGES', 'No line needed update');
             }
@@ -528,7 +541,11 @@ log.audit('SUMMARY', {
     function getLineItems(tranRec) {
         var arr = [];
         var itemMap = {};
-        var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
+
+        var lineCount = tranRec.getLineCount({
+            sublistId: ITEM_SUBLIST
+        });
+
         var i;
 
         for (i = 0; i < lineCount; i++) {
@@ -546,6 +563,7 @@ log.audit('SUMMARY', {
         for (var key in itemMap) {
             arr.push(key);
         }
+
         return arr;
     }
 
@@ -564,14 +582,20 @@ log.audit('SUMMARY', {
                 RELATED_COMPONENT_FIELD
             ]
         }).run().each(function(result) {
-            var parentId = result.getValue({ name: 'internalid' });
-            var childValue = result.getValue({ name: RELATED_COMPONENT_FIELD });
+            var parentId = result.getValue({
+                name: 'internalid'
+            });
+
+            var childValue = result.getValue({
+                name: RELATED_COMPONENT_FIELD
+            });
 
             parentId = parentId ? String(parentId) : '';
 
             if (parentId && childValue) {
                 json[parentId] = buildChildObject(childValue);
             }
+
             return true;
         });
 
@@ -591,8 +615,13 @@ log.audit('SUMMARY', {
                 MERCH_ITEM_FIELD
             ]
         }).run().each(function(result) {
-            var itemId = result.getValue({ name: 'internalid' });
-            var merchValue = result.getValue({ name: MERCH_ITEM_FIELD });
+            var itemId = result.getValue({
+                name: 'internalid'
+            });
+
+            var merchValue = result.getValue({
+                name: MERCH_ITEM_FIELD
+            });
 
             itemId = itemId ? String(itemId) : '';
             merchValue = merchValue ? String(merchValue) : '';
@@ -616,18 +645,17 @@ log.audit('SUMMARY', {
 
         search.create({
             type: "noninventoryitem",
-            filters:
-            [
-               ["type","anyof","NonInvtPart"],
-               "AND",
-               ["internalid","anyof", itemIds]
+            filters: [
+                ["type", "anyof", "NonInvtPart"],
+                "AND",
+                ["internalid", "anyof", itemIds]
             ],
-            columns:
-            [
-               search.createColumn({name: PACKAGING_FILLER_FIELD})
+            columns: [
+                search.createColumn({
+                    name: PACKAGING_FILLER_FIELD
+                })
             ]
-        }).run().each(function(result){
-
+        }).run().each(function(result) {
             var fillerValues = result.getValue({
                 name: PACKAGING_FILLER_FIELD
             });
@@ -637,6 +665,7 @@ log.audit('SUMMARY', {
             if (itemId && fillerValues) {
                 json[String(itemId)] = String(fillerValues).split(',');
             }
+
             return true;
         });
 
@@ -644,7 +673,9 @@ log.audit('SUMMARY', {
     }
 
     function isFillerAlreadyAdded(tranRec, parentItemId, fillerItemId, parentQty) {
-        var lineCount = tranRec.getLineCount({ sublistId: ITEM_SUBLIST });
+        var lineCount = tranRec.getLineCount({
+            sublistId: ITEM_SUBLIST
+        });
 
         for (var i = 0; i < lineCount; i++) {
             var lineItemId = String(tranRec.getSublistValue({
@@ -686,6 +717,7 @@ log.audit('SUMMARY', {
 
     function buildChildObject(value) {
         var obj = {};
+
         if (!value) return obj;
 
         var arr = String(value).split(',');
@@ -693,6 +725,7 @@ log.audit('SUMMARY', {
 
         for (i = 0; i < arr.length; i++) {
             var childId = String(arr[i]).replace(/\s+/g, '');
+
             if (childId) {
                 obj[childId] = true;
             }
@@ -825,25 +858,26 @@ log.audit('SUMMARY', {
         for (var key in obj) {
             return true;
         }
+
         return false;
     }
 
     function setFulfillmentKeyFromLineUniqueKey(tranRec, line) {
-       var lineUniqueKey = tranRec.getSublistValue({
-           sublistId: ITEM_SUBLIST,
-           fieldId: 'lineuniquekey',
-           line: line
-       });
-
-       if (lineUniqueKey) {
-          tranRec.setSublistValue({
+        var lineUniqueKey = tranRec.getSublistValue({
             sublistId: ITEM_SUBLIST,
-            fieldId: FULFILLMENT_KEY_FIELD,
-            line: line,
-            value: String(lineUniqueKey)
+            fieldId: 'lineuniquekey',
+            line: line
         });
+
+        if (lineUniqueKey) {
+            tranRec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: FULFILLMENT_KEY_FIELD,
+                line: line,
+                value: String(lineUniqueKey)
+            });
+        }
     }
-}
 
     function isAllowedItemType(tranRec, line) {
         var lineItemType = tranRec.getSublistValue({
