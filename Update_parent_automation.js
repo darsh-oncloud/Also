@@ -257,7 +257,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
             'AND',
             ['internalid', 'noneof', oldParentId],
             'AND',
-            [RELATED_COMPONENT_FIELD, 'anyof'].concat(componentIds)
+            [RELATED_COMPONENT_FIELD, 'allof'].concat(componentIds)
         ];
 
         log.audit('NON INVENTORY PARENT SEARCH FILTERS', {
