@@ -15,6 +15,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
     var PARENT_COLUMN_FIELD = 'custcol_parent_item';
     var TYPE_COLUMN_FIELD = 'custcol_item_parentcomp';
     var RELATED_COMPONENT_FIELD = 'custitem_related_components';
+    var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
 
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
@@ -53,7 +54,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
              * Find item lines where item changed.
              */
             for (var i = 0; i < oldLineCount; i++) {
-
                 var newLine = findNewLine(newRec, oldRec, i);
 
                 if (newLine === -1) {
@@ -72,7 +72,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
                 var oldType = getLineValue(oldRec, TYPE_COLUMN_FIELD, i);
                 var newType = getLineValue(newRec, TYPE_COLUMN_FIELD, newLine);
-
                 var oldParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, i);
                 var newParent = getLineValue(newRec, PARENT_COLUMN_FIELD, newLine);
 
@@ -127,7 +126,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
              * and find the new parent item.
              */
             for (var oldParentId in parentToFix) {
-
                 var componentIds = [];
 
                 log.audit('BUILD COMPONENT GROUP START', {
@@ -135,7 +133,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                 });
 
                 for (var c = 0; c < oldLineCount; c++) {
-
                     var oldLineType = getLineValue(oldRec, TYPE_COLUMN_FIELD, c);
                     var oldLineParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, c);
 
@@ -210,7 +207,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
                 /*
                  * Remove old filler lines before replacing parent.
-                 * Main existing script will add new filler lines again.
+                 * This same script will add new filler lines for the new parent.
                  */
                 var removedFillerCount = removeFillerLines(soRec, oldParentId);
 
@@ -236,16 +233,25 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     removedFillerCount: removedFillerCount
                 });
 
+                var parentQty = toNumber(soRec.getSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'quantity',
+                    line: parentLine
+                }));
+
                 setLine(soRec, parentLine, 'item', newParentId);
                 setLine(soRec, parentLine, 'price', -1);
                 setLine(soRec, parentLine, 'rate', 0);
                 setLine(soRec, parentLine, 'amount', 0);
+
+                var addedFillerCount = addFillerLinesForNewParent(soRec, newParentId, parentQty);
 
                 log.audit('PARENT ITEM REPLACED AND ZEROED', {
                     line: parentLine,
                     oldParentId: oldParentId,
                     newParentId: newParentId,
                     removedFillerCount: removedFillerCount,
+                    addedFillerCount: addedFillerCount,
                     price: -1,
                     rate: 0,
                     amount: 0
@@ -273,7 +279,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
     }
 
     function findNewParentItem(componentIds, oldParentId) {
-
         /*
          * This is your non-inventory item search logic.
          * It takes current component group and searches parent item.
@@ -329,9 +334,15 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         for (var i = 0; i < results.length; i++) {
             log.debug('PARENT SEARCH RESULT', {
                 index: i,
-                internalId: results[i].getValue({ name: 'internalid' }),
-                itemName: results[i].getValue({ name: 'itemid' }),
-                relatedComponents: results[i].getValue({ name: RELATED_COMPONENT_FIELD })
+                internalId: results[i].getValue({
+                    name: 'internalid'
+                }),
+                itemName: results[i].getValue({
+                    name: 'itemid'
+                }),
+                relatedComponents: results[i].getValue({
+                    name: RELATED_COMPONENT_FIELD
+                })
             });
         }
 
@@ -380,6 +391,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
     function removeFillerLines(rec, oldParentId) {
         var removed = 0;
+
         var lineCount = rec.getLineCount({
             sublistId: ITEM_SUBLIST
         });
@@ -411,6 +423,174 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         });
 
         return removed;
+    }
+
+    function addFillerLinesForNewParent(rec, newParentId, parentQty) {
+        var fillerItems = getPackagingFillerItems(newParentId);
+        var added = 0;
+
+        if (!fillerItems || !fillerItems.length) {
+            log.audit('NO NEW FILLER FOUND', {
+                newParentId: newParentId
+            });
+
+            return added;
+        }
+
+        for (var i = 0; i < fillerItems.length; i++) {
+            var fillerItemId = String(fillerItems[i] || '').replace(/\s+/g, '');
+
+            if (!fillerItemId) {
+                continue;
+            }
+
+            if (isFillerAlreadyAdded(rec, newParentId, fillerItemId, parentQty)) {
+                log.debug('NEW FILLER ALREADY EXISTS', {
+                    newParentId: newParentId,
+                    fillerItemId: fillerItemId,
+                    parentQty: parentQty
+                });
+
+                continue;
+            }
+
+            var newLine = rec.getLineCount({
+                sublistId: ITEM_SUBLIST
+            });
+
+            rec.insertLine({
+                sublistId: ITEM_SUBLIST,
+                line: newLine
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'item',
+                line: newLine,
+                value: fillerItemId
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'quantity',
+                line: newLine,
+                value: parentQty
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'location',
+                line: newLine,
+                value: 7
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'price',
+                line: newLine,
+                value: -1
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'rate',
+                line: newLine,
+                value: 0
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: PARENT_COLUMN_FIELD,
+                line: newLine,
+                value: newParentId
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: newLine,
+                value: TYPE_FILLER
+            });
+
+            added++;
+
+            log.debug('NEW FILLER LINE ADDED', {
+                newParentId: newParentId,
+                fillerItemId: fillerItemId,
+                quantity: parentQty,
+                line: newLine
+            });
+        }
+
+        log.audit('NEW FILLER LINES ADDED', {
+            newParentId: newParentId,
+            added: added
+        });
+
+        return added;
+    }
+
+    function getPackagingFillerItems(parentItemId) {
+        var fillerItems = [];
+
+        if (!parentItemId) {
+            return fillerItems;
+        }
+
+        search.create({
+            type: 'noninventoryitem',
+            filters: [
+                ['type', 'anyof', 'NonInvtPart'],
+                'AND',
+                ['internalid', 'anyof', parentItemId]
+            ],
+            columns: [
+                search.createColumn({
+                    name: PACKAGING_FILLER_FIELD
+                })
+            ]
+        }).run().each(function (result) {
+            var fillerValues = result.getValue({
+                name: PACKAGING_FILLER_FIELD
+            });
+
+            if (fillerValues) {
+                fillerItems = String(fillerValues).split(',');
+            }
+
+            return false;
+        });
+
+        return fillerItems;
+    }
+
+    function isFillerAlreadyAdded(rec, parentItemId, fillerItemId, parentQty) {
+        var lineCount = rec.getLineCount({
+            sublistId: ITEM_SUBLIST
+        });
+
+        for (var i = 0; i < lineCount; i++) {
+            var lineItemId = getLineValue(rec, 'item', i);
+            var lineParentItemId = getLineValue(rec, PARENT_COLUMN_FIELD, i);
+            var lineType = getLineValue(rec, TYPE_COLUMN_FIELD, i);
+
+            var lineQty = toNumber(rec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'quantity',
+                line: i
+            }));
+
+            if (
+                lineItemId === String(fillerItemId) &&
+                lineParentItemId === String(parentItemId) &&
+                lineType === String(TYPE_FILLER) &&
+                sameNumber(lineQty, parentQty)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     function findNewLine(newRec, oldRec, oldLine) {
@@ -473,10 +653,23 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         }
     }
 
+    function toNumber(val) {
+        var num = parseFloat(val);
+        return isNaN(num) ? 0 : num;
+    }
+
+    function sameNumber(num1, num2) {
+        num1 = toNumber(num1);
+        num2 = toNumber(num2);
+
+        return Math.abs(num1 - num2) < 0.00001;
+    }
+
     function hasKeys(obj) {
         for (var key in obj) {
             return true;
         }
+
         return false;
     }
 
