@@ -218,14 +218,31 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                  * Only replacing item.
                  * No other column field is being changed here.
                  */
-                soRec.setSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'item',
-                    line: parentLine,
-                    value: newParentId
-                });
+                // soRec.setSublistValue({
+                //     sublistId: ITEM_SUBLIST,
+                //     fieldId: 'item',
+                //     line: parentLine,
+                //     value: newParentId
+                // });
 
-                hasChanges = true;
+                // hasChanges = true;
+              
+setLine(soRec, parentLine, 'item', newParentId);
+setLine(soRec, parentLine, 'price', -1);   // Custom price level
+setLine(soRec, parentLine, 'rate', 0);
+setLine(soRec, parentLine, 'amount', 0);
+
+log.audit('PARENT ITEM REPLACED AND ZEROED', {
+    line: parentLine,
+    oldParentId: oldParentId,
+    newParentId: newParentId,
+    price: -1,
+    rate: 0,
+    amount: 0
+});
+
+hasChanges = true;
+              
             }
 
             if (hasChanges) {
@@ -390,6 +407,16 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
         return '';
     }
+
+
+  function setLine(rec, line, fieldId, value) {
+    rec.setSublistValue({
+        sublistId: ITEM_SUBLIST,
+        fieldId: fieldId,
+        line: line,
+        value: value
+    });
+}
 
     function getLineValue(rec, fieldId, line) {
         try {
