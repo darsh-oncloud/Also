@@ -208,41 +208,50 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     continue;
                 }
 
+                /*
+                 * Remove old filler lines before replacing parent.
+                 * Main existing script will add new filler lines again.
+                 */
+                var removedFillerCount = removeFillerLines(soRec, oldParentId);
+
+                /*
+                 * Re-find parent line because removeLine can shift line numbers.
+                 */
+                parentLine = findParentLine(soRec, oldParentId);
+
+                if (parentLine === -1) {
+                    log.audit('SKIP', {
+                        reason: 'Old parent line not found after filler removal',
+                        oldParentId: oldParentId,
+                        newParentId: newParentId,
+                        removedFillerCount: removedFillerCount
+                    });
+                    continue;
+                }
+
                 log.audit('REPLACING PARENT ITEM LINE', {
                     line: parentLine,
                     oldParentId: oldParentId,
-                    newParentId: newParentId
+                    newParentId: newParentId,
+                    removedFillerCount: removedFillerCount
                 });
 
-                /*
-                 * Only replacing item.
-                 * No other column field is being changed here.
-                 */
-                // soRec.setSublistValue({
-                //     sublistId: ITEM_SUBLIST,
-                //     fieldId: 'item',
-                //     line: parentLine,
-                //     value: newParentId
-                // });
+                setLine(soRec, parentLine, 'item', newParentId);
+                setLine(soRec, parentLine, 'price', -1);
+                setLine(soRec, parentLine, 'rate', 0);
+                setLine(soRec, parentLine, 'amount', 0);
 
-                // hasChanges = true;
-              
-setLine(soRec, parentLine, 'item', newParentId);
-setLine(soRec, parentLine, 'price', -1);   // Custom price level
-setLine(soRec, parentLine, 'rate', 0);
-setLine(soRec, parentLine, 'amount', 0);
+                log.audit('PARENT ITEM REPLACED AND ZEROED', {
+                    line: parentLine,
+                    oldParentId: oldParentId,
+                    newParentId: newParentId,
+                    removedFillerCount: removedFillerCount,
+                    price: -1,
+                    rate: 0,
+                    amount: 0
+                });
 
-log.audit('PARENT ITEM REPLACED AND ZEROED', {
-    line: parentLine,
-    oldParentId: oldParentId,
-    newParentId: newParentId,
-    price: -1,
-    rate: 0,
-    amount: 0
-});
-
-hasChanges = true;
-              
+                hasChanges = true;
             }
 
             if (hasChanges) {
@@ -369,6 +378,41 @@ hasChanges = true;
         return -1;
     }
 
+    function removeFillerLines(rec, oldParentId) {
+        var removed = 0;
+        var lineCount = rec.getLineCount({
+            sublistId: ITEM_SUBLIST
+        });
+
+        for (var i = lineCount - 1; i >= 0; i--) {
+            var parentId = getLineValue(rec, PARENT_COLUMN_FIELD, i);
+            var typeVal = getLineValue(rec, TYPE_COLUMN_FIELD, i);
+
+            if (parentId === oldParentId && typeVal === TYPE_FILLER) {
+                log.debug('REMOVING OLD FILLER LINE', {
+                    line: i,
+                    item: getLineValue(rec, 'item', i),
+                    oldParentId: oldParentId
+                });
+
+                rec.removeLine({
+                    sublistId: ITEM_SUBLIST,
+                    line: i,
+                    ignoreRecalc: true
+                });
+
+                removed++;
+            }
+        }
+
+        log.audit('OLD FILLER LINES REMOVED', {
+            oldParentId: oldParentId,
+            removed: removed
+        });
+
+        return removed;
+    }
+
     function findNewLine(newRec, oldRec, oldLine) {
         var oldKey = getLineValue(oldRec, 'lineuniquekey', oldLine);
 
@@ -408,15 +452,14 @@ hasChanges = true;
         return '';
     }
 
-
-  function setLine(rec, line, fieldId, value) {
-    rec.setSublistValue({
-        sublistId: ITEM_SUBLIST,
-        fieldId: fieldId,
-        line: line,
-        value: value
-    });
-}
+    function setLine(rec, line, fieldId, value) {
+        rec.setSublistValue({
+            sublistId: ITEM_SUBLIST,
+            fieldId: fieldId,
+            line: line,
+            value: value
+        });
+    }
 
     function getLineValue(rec, fieldId, line) {
         try {
