@@ -1,8 +1,14 @@
 /**
  * @NApiVersion 2.1
  * @NScriptType UserEventScript
+ *
+ * EDIT ONLY SCRIPT
+ * Purpose:
+ * If Shopify replaces one component item on an existing SO,
+ * find the new Non-Inventory parent by new component group
+ * and replace only the old parent item line.
  */
-define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
+define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search, log, runtime) {
 
     var ITEM_SUBLIST = 'item';
 
@@ -12,6 +18,7 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
 
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
+    var TYPE_FILLER = '5';
 
     function afterSubmit(context) {
         try {
@@ -27,224 +34,318 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
             var newRec = context.newRecord;
             var soId = newRec.id;
 
-            var changedParentId = '';
+            log.audit('SCRIPT START', {
+                salesOrderId: soId,
+                contextType: context.type,
+                executionContext: runtime.executionContext
+            });
 
             var oldLineCount = oldRec.getLineCount({
                 sublistId: ITEM_SUBLIST
             });
 
+            var parentToFix = {};
+            var allChangedLines = [];
+
             /*
              * STEP 1:
-             * Find changed component line.
+             * Compare old record and new record.
+             * Find item lines where item changed.
              */
             for (var i = 0; i < oldLineCount; i++) {
-
-                var oldType = String(oldRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: TYPE_COLUMN_FIELD,
-                    line: i
-                }) || '');
-
-                if (oldType !== TYPE_COMPONENT) {
-                    continue;
-                }
 
                 var newLine = findNewLine(newRec, oldRec, i);
 
                 if (newLine === -1) {
+                    log.debug('LINE NOT FOUND IN NEW RECORD', {
+                        oldLine: i
+                    });
                     continue;
                 }
 
-                var oldItem = String(oldRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'item',
-                    line: i
-                }) || '');
+                var oldItem = getLineValue(oldRec, 'item', i);
+                var newItem = getLineValue(newRec, 'item', newLine);
 
-                var newItem = String(newRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'item',
-                    line: newLine
-                }) || '');
-
-                if (oldItem && newItem && oldItem !== newItem) {
-                    changedParentId = String(oldRec.getSublistValue({
-                        sublistId: ITEM_SUBLIST,
-                        fieldId: PARENT_COLUMN_FIELD,
-                        line: i
-                    }) || '');
-
-                    break;
-                }
-            }
-
-            if (!changedParentId) {
-                log.debug('STOP', 'No component item change found');
-                return;
-            }
-
-            /*
-             * STEP 2:
-             * Build new component combination for that old parent.
-             */
-            var newComponentIds = [];
-
-            for (var c = 0; c < oldLineCount; c++) {
-
-                var oldCompType = String(oldRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: TYPE_COLUMN_FIELD,
-                    line: c
-                }) || '');
-
-                var oldParent = String(oldRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: PARENT_COLUMN_FIELD,
-                    line: c
-                }) || '');
-
-                if (oldCompType !== TYPE_COMPONENT || oldParent !== changedParentId) {
+                if (!oldItem || !newItem || oldItem === newItem) {
                     continue;
                 }
 
-                var currentLine = findNewLine(newRec, oldRec, c);
+                var oldType = getLineValue(oldRec, TYPE_COLUMN_FIELD, i);
+                var newType = getLineValue(newRec, TYPE_COLUMN_FIELD, newLine);
 
-                if (currentLine === -1) {
-                    continue;
+                var oldParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, i);
+                var newParent = getLineValue(newRec, PARENT_COLUMN_FIELD, newLine);
+
+                if (!oldParent) {
+                    oldParent = findNearestParentAbove(oldRec, i);
                 }
 
-                var currentItem = String(newRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'item',
-                    line: currentLine
-                }) || '');
+                var changedObj = {
+                    oldLine: i,
+                    newLine: newLine,
+                    oldItem: oldItem,
+                    newItem: newItem,
+                    oldType: oldType,
+                    newType: newType,
+                    oldParent: oldParent,
+                    newParent: newParent
+                };
 
-                if (currentItem && newComponentIds.indexOf(currentItem) === -1) {
-                    newComponentIds.push(currentItem);
+                allChangedLines.push(changedObj);
+
+                log.debug('ITEM CHANGE FOUND', changedObj);
+
+                /*
+                 * We only care if changed line belonged to a parent/component group.
+                 * It can be oldType Component OR oldParent has value.
+                 */
+                if (oldParent && (oldType === TYPE_COMPONENT || oldParent)) {
+                    parentToFix[oldParent] = true;
                 }
             }
 
-            if (!newComponentIds.length) {
-                log.debug('STOP', 'No new component group found');
+            log.audit('ALL CHANGED ITEM LINES', allChangedLines);
+
+            if (!hasKeys(parentToFix)) {
+                log.audit('STOP', 'No component item change found with parent group');
                 return;
             }
 
-            /*
-             * STEP 3:
-             * Find new Non-Inventory parent item.
-             */
-            var newParentId = findParentByComponents(newComponentIds, changedParentId);
+            log.audit('PARENT GROUPS TO FIX', Object.keys(parentToFix));
 
-            if (!newParentId) {
-                log.debug('STOP', {
-                    message: 'No new parent found for component group',
-                    oldParent: changedParentId,
-                    components: newComponentIds
-                });
-                return;
-            }
-
-            /*
-             * STEP 4:
-             * Load SO and replace only the parent item line.
-             */
             var soRec = record.load({
                 type: record.Type.SALES_ORDER,
                 id: soId,
                 isDynamic: false
             });
 
-            var parentLine = findParentLineToReplace(soRec, changedParentId);
+            var hasChanges = false;
 
-            if (parentLine === -1) {
-                log.debug('STOP', 'Old parent line not found on SO');
-                return;
+            /*
+             * STEP 2:
+             * For each old parent, create the new component group
+             * and find the new parent item.
+             */
+            for (var oldParentId in parentToFix) {
+
+                var componentIds = [];
+
+                log.audit('BUILD COMPONENT GROUP START', {
+                    oldParentId: oldParentId
+                });
+
+                for (var c = 0; c < oldLineCount; c++) {
+
+                    var oldLineType = getLineValue(oldRec, TYPE_COLUMN_FIELD, c);
+                    var oldLineParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, c);
+
+                    /*
+                     * We only build group from old component lines
+                     * that were connected with this old parent.
+                     */
+                    if (oldLineType !== TYPE_COMPONENT || oldLineParent !== oldParentId) {
+                        continue;
+                    }
+
+                    var currentLine = findNewLine(newRec, oldRec, c);
+
+                    if (currentLine === -1) {
+                        log.debug('COMPONENT LINE NOT FOUND IN NEW RECORD', {
+                            oldParentId: oldParentId,
+                            oldLine: c
+                        });
+                        continue;
+                    }
+
+                    var oldComponentItem = getLineValue(oldRec, 'item', c);
+                    var currentComponentItem = getLineValue(newRec, 'item', currentLine);
+
+                    log.debug('COMPONENT GROUP LINE', {
+                        oldParentId: oldParentId,
+                        oldLine: c,
+                        newLine: currentLine,
+                        oldComponentItem: oldComponentItem,
+                        currentComponentItem: currentComponentItem
+                    });
+
+                    if (currentComponentItem && componentIds.indexOf(currentComponentItem) === -1) {
+                        componentIds.push(currentComponentItem);
+                    }
+                }
+
+                log.audit('FINAL COMPONENT GROUP CREATED', {
+                    oldParentId: oldParentId,
+                    componentIds: componentIds
+                });
+
+                if (!componentIds.length) {
+                    log.audit('SKIP', {
+                        reason: 'No component ids found',
+                        oldParentId: oldParentId
+                    });
+                    continue;
+                }
+
+                var newParentId = findNewParentItem(componentIds, oldParentId);
+
+                if (!newParentId) {
+                    log.audit('SKIP', {
+                        reason: 'No new parent found from search',
+                        oldParentId: oldParentId,
+                        componentIds: componentIds
+                    });
+                    continue;
+                }
+
+                var parentLine = findParentLine(soRec, oldParentId);
+
+                if (parentLine === -1) {
+                    log.audit('SKIP', {
+                        reason: 'Old parent line not found on SO',
+                        oldParentId: oldParentId,
+                        newParentId: newParentId
+                    });
+                    continue;
+                }
+
+                log.audit('REPLACING PARENT ITEM LINE', {
+                    line: parentLine,
+                    oldParentId: oldParentId,
+                    newParentId: newParentId
+                });
+
+                /*
+                 * Only replacing item.
+                 * No other column field is being changed here.
+                 */
+                soRec.setSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: 'item',
+                    line: parentLine,
+                    value: newParentId
+                });
+
+                hasChanges = true;
             }
 
-            soRec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'item',
-                line: parentLine,
-                value: newParentId
-            });
+            if (hasChanges) {
+                var savedId = soRec.save({
+                    enableSourcing: false,
+                    ignoreMandatoryFields: true
+                });
 
-            var savedId = soRec.save({
-                enableSourcing: false,
-                ignoreMandatoryFields: true
-            });
-
-            log.audit('PARENT REPLACED SUCCESSFULLY', {
-                salesOrder: savedId,
-                oldParent: changedParentId,
-                newParent: newParentId,
-                components: newComponentIds
-            });
+                log.audit('SO SAVED SUCCESSFULLY', {
+                    salesOrderId: savedId
+                });
+            } else {
+                log.audit('NO SAVE', 'No parent item replacement needed');
+            }
 
         } catch (e) {
             log.error('afterSubmit Error', e);
         }
     }
 
-    function findParentByComponents(componentIds, oldParentId) {
-        var filters = [
-            ['type', 'anyof', 'NonInvtPart']
-        ];
+    function findNewParentItem(componentIds, oldParentId) {
 
         /*
-         * Same search logic, but adding each component with AND.
-         * This means parent should contain all current components.
+         * This is your non-inventory item search logic.
+         * It takes current component group and searches parent item.
          */
-        for (var i = 0; i < componentIds.length; i++) {
-            filters.push('AND');
-            filters.push([RELATED_COMPONENT_FIELD, 'allof', componentIds[i]]);
-        }
+        var filters = [
+            ['type', 'anyof', 'NonInvtPart'],
+            'AND',
+            ['internalid', 'noneof', oldParentId],
+            'AND',
+            [RELATED_COMPONENT_FIELD, 'anyof'].concat(componentIds)
+        ];
 
-        var results = search.create({
+        log.audit('NON INVENTORY PARENT SEARCH FILTERS', {
+            filters: JSON.stringify(filters)
+        });
+
+        var noninventoryitemSearchObj = search.create({
             type: 'noninventoryitem',
             filters: filters,
             columns: [
                 search.createColumn({
-                    name: 'internalid'
+                    name: 'internalid',
+                    label: 'Internal ID'
+                }),
+                search.createColumn({
+                    name: 'itemid',
+                    label: 'Name'
+                }),
+                search.createColumn({
+                    name: RELATED_COMPONENT_FIELD,
+                    label: 'Related Components'
                 })
             ]
-        }).run().getRange({
-            start: 0,
-            end: 1
         });
 
-        if (results && results.length) {
-            var parentId = String(results[0].getValue({
-                name: 'internalid'
-            }) || '');
+        var count = noninventoryitemSearchObj.runPaged().count;
 
-            if (parentId && parentId !== String(oldParentId)) {
-                return parentId;
-            }
+        log.audit('NON INVENTORY PARENT SEARCH COUNT', {
+            count: count,
+            oldParentId: oldParentId,
+            componentIds: componentIds
+        });
+
+        var results = noninventoryitemSearchObj.run().getRange({
+            start: 0,
+            end: 5
+        });
+
+        if (!results || !results.length) {
+            return '';
         }
 
-        return '';
+        for (var i = 0; i < results.length; i++) {
+            log.debug('PARENT SEARCH RESULT', {
+                index: i,
+                internalId: results[i].getValue({ name: 'internalid' }),
+                itemName: results[i].getValue({ name: 'itemid' }),
+                relatedComponents: results[i].getValue({ name: RELATED_COMPONENT_FIELD })
+            });
+        }
+
+        /*
+         * Take first match as requested.
+         */
+        var firstParentId = String(results[0].getValue({
+            name: 'internalid'
+        }) || '');
+
+        log.audit('FIRST MATCHING NEW PARENT SELECTED', {
+            newParentId: firstParentId
+        });
+
+        return firstParentId;
     }
 
-    function findParentLineToReplace(soRec, oldParentId) {
+    function findParentLine(soRec, oldParentId) {
         var lineCount = soRec.getLineCount({
             sublistId: ITEM_SUBLIST
         });
 
         for (var i = 0; i < lineCount; i++) {
-            var itemId = String(soRec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'item',
-                line: i
-            }) || '');
+            var itemId = getLineValue(soRec, 'item', i);
+            var typeVal = getLineValue(soRec, TYPE_COLUMN_FIELD, i);
 
-            var typeVal = String(soRec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: TYPE_COLUMN_FIELD,
-                line: i
-            }) || '');
-
-            if (itemId === String(oldParentId) && typeVal === TYPE_PARENT) {
+            if (itemId === oldParentId && typeVal === TYPE_PARENT) {
                 return i;
+            }
+        }
+
+        /*
+         * Fallback:
+         * If type field changed/blank, still find the item line.
+         */
+        for (var j = 0; j < lineCount; j++) {
+            var fallbackItemId = getLineValue(soRec, 'item', j);
+
+            if (fallbackItemId === oldParentId) {
+                return j;
             }
         }
 
@@ -252,11 +353,7 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
     }
 
     function findNewLine(newRec, oldRec, oldLine) {
-        var oldKey = String(oldRec.getSublistValue({
-            sublistId: ITEM_SUBLIST,
-            fieldId: 'lineuniquekey',
-            line: oldLine
-        }) || '');
+        var oldKey = getLineValue(oldRec, 'lineuniquekey', oldLine);
 
         var newLineCount = newRec.getLineCount({
             sublistId: ITEM_SUBLIST
@@ -264,11 +361,7 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
 
         if (oldKey) {
             for (var i = 0; i < newLineCount; i++) {
-                var newKey = String(newRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'lineuniquekey',
-                    line: i
-                }) || '');
+                var newKey = getLineValue(newRec, 'lineuniquekey', i);
 
                 if (newKey === oldKey) {
                     return i;
@@ -277,13 +370,44 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
         }
 
         /*
-         * Simple fallback if line unique key is not available.
+         * Fallback if lineuniquekey is not available.
          */
         if (oldLine < newLineCount) {
             return oldLine;
         }
 
         return -1;
+    }
+
+    function findNearestParentAbove(rec, fromLine) {
+        for (var i = fromLine - 1; i >= 0; i--) {
+            var typeVal = getLineValue(rec, TYPE_COLUMN_FIELD, i);
+
+            if (typeVal === TYPE_PARENT) {
+                return getLineValue(rec, 'item', i);
+            }
+        }
+
+        return '';
+    }
+
+    function getLineValue(rec, fieldId, line) {
+        try {
+            return String(rec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: fieldId,
+                line: line
+            }) || '');
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function hasKeys(obj) {
+        for (var key in obj) {
+            return true;
+        }
+        return false;
     }
 
     return {
