@@ -16,6 +16,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
     var TYPE_COLUMN_FIELD = 'custcol_item_parentcomp';
     var RELATED_COMPONENT_FIELD = 'custitem_related_components';
     var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
+    var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
 
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
@@ -244,6 +245,20 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                 setLine(soRec, parentLine, 'rate', 0);
                 setLine(soRec, parentLine, 'amount', 0);
 
+                /*
+                 * IMPORTANT FIX:
+                 * After old parent is replaced with new parent,
+                 * update all component lines from old parent to new parent.
+                 * This prevents changed component from becoming Off Bike/Merch.
+                 */
+                var updatedComponentCount = updateComponentLinesForNewParent(
+                    soRec,
+                    oldRec,
+                    newRec,
+                    oldParentId,
+                    newParentId
+                );
+
                 var addedFillerCount = addFillerLinesForNewParent(soRec, newParentId, parentQty);
 
                 log.audit('PARENT ITEM REPLACED AND ZEROED', {
@@ -251,6 +266,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     oldParentId: oldParentId,
                     newParentId: newParentId,
                     removedFillerCount: removedFillerCount,
+                    updatedComponentCount: updatedComponentCount,
                     addedFillerCount: addedFillerCount,
                     price: -1,
                     rate: 0,
@@ -425,6 +441,93 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         return removed;
     }
 
+    function updateComponentLinesForNewParent(soRec, oldRec, newRec, oldParentId, newParentId) {
+        var updated = 0;
+
+        var oldLineCount = oldRec.getLineCount({
+            sublistId: ITEM_SUBLIST
+        });
+
+        for (var i = 0; i < oldLineCount; i++) {
+            var oldLineType = getLineValue(oldRec, TYPE_COLUMN_FIELD, i);
+            var oldLineParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, i);
+
+            if (oldLineType !== TYPE_COMPONENT || oldLineParent !== oldParentId) {
+                continue;
+            }
+
+            var newLine = findNewLine(newRec, oldRec, i);
+
+            if (newLine === -1) {
+                log.debug('SKIP COMPONENT UPDATE - NEW LINE NOT FOUND', {
+                    oldParentId: oldParentId,
+                    newParentId: newParentId,
+                    oldLine: i
+                });
+                continue;
+            }
+
+            var lineUniqueKey = getLineValue(newRec, 'lineuniquekey', newLine);
+            var loadedLine = findLoadedLineByLineUniqueKey(soRec, lineUniqueKey);
+
+            if (loadedLine === -1) {
+                loadedLine = newLine;
+            }
+
+            var loadedLineCount = soRec.getLineCount({
+                sublistId: ITEM_SUBLIST
+            });
+
+            if (loadedLine < 0 || loadedLine >= loadedLineCount) {
+                log.debug('SKIP COMPONENT UPDATE - LOADED LINE INVALID', {
+                    oldParentId: oldParentId,
+                    newParentId: newParentId,
+                    oldLine: i,
+                    newLine: newLine,
+                    loadedLine: loadedLine,
+                    lineUniqueKey: lineUniqueKey
+                });
+                continue;
+            }
+
+            var currentComponentItem = getLineValue(soRec, 'item', loadedLine);
+
+            soRec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: PARENT_COLUMN_FIELD,
+                line: loadedLine,
+                value: newParentId
+            });
+
+            soRec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: loadedLine,
+                value: TYPE_COMPONENT
+            });
+
+            setFulfillmentKeyFromLineUniqueKey(soRec, loadedLine);
+
+            updated++;
+
+            log.debug('COMPONENT LINE UPDATED TO NEW PARENT', {
+                line: loadedLine,
+                item: currentComponentItem,
+                oldParentId: oldParentId,
+                newParentId: newParentId,
+                lineUniqueKey: lineUniqueKey
+            });
+        }
+
+        log.audit('COMPONENT LINES UPDATED TO NEW PARENT', {
+            oldParentId: oldParentId,
+            newParentId: newParentId,
+            updated: updated
+        });
+
+        return updated;
+    }
+
     function addFillerLinesForNewParent(rec, newParentId, parentQty) {
         var fillerItems = getPackagingFillerItems(newParentId);
         var added = 0;
@@ -500,6 +603,13 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
             rec.setSublistValue({
                 sublistId: ITEM_SUBLIST,
+                fieldId: 'amount',
+                line: newLine,
+                value: 0
+            });
+
+            rec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
                 fieldId: PARENT_COLUMN_FIELD,
                 line: newLine,
                 value: newParentId
@@ -511,6 +621,8 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                 line: newLine,
                 value: TYPE_FILLER
             });
+
+            setFulfillmentKeyFromLineUniqueKey(rec, newLine);
 
             added++;
 
@@ -620,6 +732,26 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         return -1;
     }
 
+    function findLoadedLineByLineUniqueKey(rec, lineUniqueKey) {
+        if (!lineUniqueKey) {
+            return -1;
+        }
+
+        var lineCount = rec.getLineCount({
+            sublistId: ITEM_SUBLIST
+        });
+
+        for (var i = 0; i < lineCount; i++) {
+            var currentKey = getLineValue(rec, 'lineuniquekey', i);
+
+            if (currentKey === String(lineUniqueKey)) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     function findNearestParentAbove(rec, fromLine) {
         for (var i = fromLine - 1; i >= 0; i--) {
             var typeVal = getLineValue(rec, TYPE_COLUMN_FIELD, i);
@@ -650,6 +782,30 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
             }) || '');
         } catch (e) {
             return '';
+        }
+    }
+
+    function setFulfillmentKeyFromLineUniqueKey(rec, line) {
+        try {
+            var lineUniqueKey = rec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: 'lineuniquekey',
+                line: line
+            });
+
+            if (lineUniqueKey) {
+                rec.setSublistValue({
+                    sublistId: ITEM_SUBLIST,
+                    fieldId: FULFILLMENT_KEY_FIELD,
+                    line: line,
+                    value: String(lineUniqueKey)
+                });
+            }
+        } catch (e) {
+            log.debug('setFulfillmentKeyFromLineUniqueKey Error', {
+                line: line,
+                error: e.message
+            });
         }
     }
 
