@@ -7,6 +7,11 @@
  * If Shopify replaces one component item on an existing SO,
  * find the new Non-Inventory parent by new component group
  * and replace only the old parent item line.
+ *
+ * New Logic:
+ * - Do NOT touch filler lines.
+ * - Only replace old parent with new parent.
+ * - Main afterSubmit script will reassign correct parent/component after this save.
  */
 define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search, log, runtime) {
 
@@ -15,12 +20,9 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
     var PARENT_COLUMN_FIELD = 'custcol_parent_item';
     var TYPE_COLUMN_FIELD = 'custcol_item_parentcomp';
     var RELATED_COMPONENT_FIELD = 'custitem_related_components';
-    var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
-    var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
 
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
-    var TYPE_FILLER = '5';
 
     function afterSubmit(context) {
         try {
@@ -51,8 +53,8 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
             /*
              * STEP 1:
-             * Compare old record and new record.
-             * Find item lines where item changed.
+             * Find the item line which changed from old component item
+             * to any new item.
              */
             for (var i = 0; i < oldLineCount; i++) {
                 var newLine = findNewLine(newRec, oldRec, i);
@@ -73,6 +75,23 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
                 var oldType = getLineValue(oldRec, TYPE_COLUMN_FIELD, i);
                 var newType = getLineValue(newRec, TYPE_COLUMN_FIELD, newLine);
+
+                /*
+                 * Only care about line which was Component before edit.
+                 * We do not process parent/filler/merch/add-on changes here.
+                 */
+                if (oldType !== TYPE_COMPONENT) {
+                    log.debug('SKIP CHANGED LINE - OLD LINE WAS NOT COMPONENT', {
+                        oldLine: i,
+                        newLine: newLine,
+                        oldItem: oldItem,
+                        newItem: newItem,
+                        oldType: oldType,
+                        newType: newType
+                    });
+                    continue;
+                }
+
                 var oldParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, i);
                 var newParent = getLineValue(newRec, PARENT_COLUMN_FIELD, newLine);
 
@@ -93,21 +112,17 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
                 allChangedLines.push(changedObj);
 
-                log.debug('ITEM CHANGE FOUND', changedObj);
+                log.debug('COMPONENT ITEM CHANGE FOUND', changedObj);
 
-                /*
-                 * We only care if changed line belonged to a parent/component group.
-                 * It can be oldType Component OR oldParent has value.
-                 */
-                if (oldParent && (oldType === TYPE_COMPONENT || oldParent)) {
+                if (oldParent) {
                     parentToFix[oldParent] = true;
                 }
             }
 
-            log.audit('ALL CHANGED ITEM LINES', allChangedLines);
+            log.audit('ALL CHANGED COMPONENT LINES', allChangedLines);
 
             if (!hasKeys(parentToFix)) {
-                log.audit('STOP', 'No component item change found with parent group');
+                log.audit('STOP', 'No changed component line found with parent group');
                 return;
             }
 
@@ -123,8 +138,8 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
             /*
              * STEP 2:
-             * For each old parent, create the new component group
-             * and find the new parent item.
+             * For each old parent, build latest component group
+             * using current order component items.
              */
             for (var oldParentId in parentToFix) {
                 var componentIds = [];
@@ -137,10 +152,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     var oldLineType = getLineValue(oldRec, TYPE_COLUMN_FIELD, c);
                     var oldLineParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, c);
 
-                    /*
-                     * We only build group from old component lines
-                     * that were connected with this old parent.
-                     */
                     if (oldLineType !== TYPE_COMPONENT || oldLineParent !== oldParentId) {
                         continue;
                     }
@@ -155,6 +166,12 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                         continue;
                     }
 
+                    /*
+                     * This takes current item from new record.
+                     * Example:
+                     * Old group: 606, 612, 621
+                     * New group after Shopify edit: 606, 612, 618
+                     */
                     var oldComponentItem = getLineValue(oldRec, 'item', c);
                     var currentComponentItem = getLineValue(newRec, 'item', currentLine);
 
@@ -184,6 +201,10 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     continue;
                 }
 
+                /*
+                 * STEP 3:
+                 * Find new parent item by latest component group.
+                 */
                 var newParentId = findNewParentItem(componentIds, oldParentId);
 
                 if (!newParentId) {
@@ -195,6 +216,10 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     continue;
                 }
 
+                /*
+                 * STEP 4:
+                 * Find old parent line on loaded SO.
+                 */
                 var parentLine = findParentLine(soRec, oldParentId);
 
                 if (parentLine === -1) {
@@ -207,75 +232,46 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                 }
 
                 /*
-                 * Remove old filler lines before replacing parent.
-                 * This same script will add new filler lines for the new parent.
+                 * IMPORTANT:
+                 * Do NOT remove filler.
+                 * Do NOT add filler.
+                 * Only replace parent item.
                  */
-                var removedFillerCount = removeFillerLines(soRec, oldParentId);
-
-                /*
-                 * Re-find parent line because removeLine can shift line numbers.
-                 */
-                parentLine = findParentLine(soRec, oldParentId);
-
-                if (parentLine === -1) {
-                    log.audit('SKIP', {
-                        reason: 'Old parent line not found after filler removal',
-                        oldParentId: oldParentId,
-                        newParentId: newParentId,
-                        removedFillerCount: removedFillerCount
-                    });
-                    continue;
-                }
 
                 log.audit('REPLACING PARENT ITEM LINE', {
                     line: parentLine,
                     oldParentId: oldParentId,
-                    newParentId: newParentId,
-                    removedFillerCount: removedFillerCount
+                    newParentId: newParentId
                 });
 
-                var parentQty = toNumber(soRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'quantity',
-                    line: parentLine
-                }));
-
+                /*
+                 * Keep line details same.
+                 * Only item changes, price level custom, rate/amount zero.
+                 */
                 setLine(soRec, parentLine, 'item', newParentId);
                 setLine(soRec, parentLine, 'price', -1);
                 setLine(soRec, parentLine, 'rate', 0);
                 setLine(soRec, parentLine, 'amount', 0);
 
-                /*
-                 * IMPORTANT FIX:
-                 * After old parent is replaced with new parent,
-                 * update all component lines from old parent to new parent.
-                 * This prevents changed component from becoming Off Bike/Merch.
-                 */
-                var updatedComponentCount = updateComponentLinesForNewParent(
-                    soRec,
-                    oldRec,
-                    newRec,
-                    oldParentId,
-                    newParentId
-                );
-
-                var addedFillerCount = addFillerLinesForNewParent(soRec, newParentId, parentQty);
-
                 log.audit('PARENT ITEM REPLACED AND ZEROED', {
                     line: parentLine,
                     oldParentId: oldParentId,
                     newParentId: newParentId,
-                    removedFillerCount: removedFillerCount,
-                    updatedComponentCount: updatedComponentCount,
-                    addedFillerCount: addedFillerCount,
                     price: -1,
                     rate: 0,
-                    amount: 0
+                    amount: 0,
+                    fillerTouched: false
                 });
 
                 hasChanges = true;
             }
 
+            /*
+             * STEP 5:
+             * Save SO.
+             * After this save, the main parent/component afterSubmit script
+             * will run again and assign correct parent/component values.
+             */
             if (hasChanges) {
                 var savedId = soRec.save({
                     enableSourcing: false,
@@ -283,7 +279,8 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                 });
 
                 log.audit('SO SAVED SUCCESSFULLY', {
-                    salesOrderId: savedId
+                    salesOrderId: savedId,
+                    note: 'Parent changed only. Main afterSubmit should reassign parent/component.'
                 });
             } else {
                 log.audit('NO SAVE', 'No parent item replacement needed');
@@ -296,8 +293,8 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
     function findNewParentItem(componentIds, oldParentId) {
         /*
-         * This is your non-inventory item search logic.
-         * It takes current component group and searches parent item.
+         * Search Non-Inventory parent item where related components
+         * match the latest component group.
          */
         var filters = [
             ['type', 'anyof', 'NonInvtPart'],
@@ -363,7 +360,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         }
 
         /*
-         * Take first match as requested.
+         * Take first match.
          */
         var firstParentId = String(results[0].getValue({
             name: 'internalid'
@@ -405,306 +402,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         return -1;
     }
 
-    function removeFillerLines(rec, oldParentId) {
-        var removed = 0;
-
-        var lineCount = rec.getLineCount({
-            sublistId: ITEM_SUBLIST
-        });
-
-        for (var i = lineCount - 1; i >= 0; i--) {
-            var parentId = getLineValue(rec, PARENT_COLUMN_FIELD, i);
-            var typeVal = getLineValue(rec, TYPE_COLUMN_FIELD, i);
-
-            if (parentId === oldParentId && typeVal === TYPE_FILLER) {
-                log.debug('REMOVING OLD FILLER LINE', {
-                    line: i,
-                    item: getLineValue(rec, 'item', i),
-                    oldParentId: oldParentId
-                });
-
-                rec.removeLine({
-                    sublistId: ITEM_SUBLIST,
-                    line: i,
-                    ignoreRecalc: true
-                });
-
-                removed++;
-            }
-        }
-
-        log.audit('OLD FILLER LINES REMOVED', {
-            oldParentId: oldParentId,
-            removed: removed
-        });
-
-        return removed;
-    }
-
-    function updateComponentLinesForNewParent(soRec, oldRec, newRec, oldParentId, newParentId) {
-        var updated = 0;
-
-        var oldLineCount = oldRec.getLineCount({
-            sublistId: ITEM_SUBLIST
-        });
-
-        for (var i = 0; i < oldLineCount; i++) {
-            var oldLineType = getLineValue(oldRec, TYPE_COLUMN_FIELD, i);
-            var oldLineParent = getLineValue(oldRec, PARENT_COLUMN_FIELD, i);
-
-            if (oldLineType !== TYPE_COMPONENT || oldLineParent !== oldParentId) {
-                continue;
-            }
-
-            var newLine = findNewLine(newRec, oldRec, i);
-
-            if (newLine === -1) {
-                log.debug('SKIP COMPONENT UPDATE - NEW LINE NOT FOUND', {
-                    oldParentId: oldParentId,
-                    newParentId: newParentId,
-                    oldLine: i
-                });
-                continue;
-            }
-
-            var lineUniqueKey = getLineValue(newRec, 'lineuniquekey', newLine);
-            var loadedLine = findLoadedLineByLineUniqueKey(soRec, lineUniqueKey);
-
-            if (loadedLine === -1) {
-                loadedLine = newLine;
-            }
-
-            var loadedLineCount = soRec.getLineCount({
-                sublistId: ITEM_SUBLIST
-            });
-
-            if (loadedLine < 0 || loadedLine >= loadedLineCount) {
-                log.debug('SKIP COMPONENT UPDATE - LOADED LINE INVALID', {
-                    oldParentId: oldParentId,
-                    newParentId: newParentId,
-                    oldLine: i,
-                    newLine: newLine,
-                    loadedLine: loadedLine,
-                    lineUniqueKey: lineUniqueKey
-                });
-                continue;
-            }
-
-            var currentComponentItem = getLineValue(soRec, 'item', loadedLine);
-
-            soRec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: PARENT_COLUMN_FIELD,
-                line: loadedLine,
-                value: newParentId
-            });
-
-            soRec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: TYPE_COLUMN_FIELD,
-                line: loadedLine,
-                value: TYPE_COMPONENT
-            });
-
-            setFulfillmentKeyFromLineUniqueKey(soRec, loadedLine);
-
-            updated++;
-
-            log.debug('COMPONENT LINE UPDATED TO NEW PARENT', {
-                line: loadedLine,
-                item: currentComponentItem,
-                oldParentId: oldParentId,
-                newParentId: newParentId,
-                lineUniqueKey: lineUniqueKey
-            });
-        }
-
-        log.audit('COMPONENT LINES UPDATED TO NEW PARENT', {
-            oldParentId: oldParentId,
-            newParentId: newParentId,
-            updated: updated
-        });
-
-        return updated;
-    }
-
-    function addFillerLinesForNewParent(rec, newParentId, parentQty) {
-        var fillerItems = getPackagingFillerItems(newParentId);
-        var added = 0;
-
-        if (!fillerItems || !fillerItems.length) {
-            log.audit('NO NEW FILLER FOUND', {
-                newParentId: newParentId
-            });
-
-            return added;
-        }
-
-        for (var i = 0; i < fillerItems.length; i++) {
-            var fillerItemId = String(fillerItems[i] || '').replace(/\s+/g, '');
-
-            if (!fillerItemId) {
-                continue;
-            }
-
-            if (isFillerAlreadyAdded(rec, newParentId, fillerItemId, parentQty)) {
-                log.debug('NEW FILLER ALREADY EXISTS', {
-                    newParentId: newParentId,
-                    fillerItemId: fillerItemId,
-                    parentQty: parentQty
-                });
-
-                continue;
-            }
-
-            var newLine = rec.getLineCount({
-                sublistId: ITEM_SUBLIST
-            });
-
-            rec.insertLine({
-                sublistId: ITEM_SUBLIST,
-                line: newLine
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'item',
-                line: newLine,
-                value: fillerItemId
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'quantity',
-                line: newLine,
-                value: parentQty
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'location',
-                line: newLine,
-                value: 7
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'price',
-                line: newLine,
-                value: -1
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'rate',
-                line: newLine,
-                value: 0
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'amount',
-                line: newLine,
-                value: 0
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: PARENT_COLUMN_FIELD,
-                line: newLine,
-                value: newParentId
-            });
-
-            rec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: TYPE_COLUMN_FIELD,
-                line: newLine,
-                value: TYPE_FILLER
-            });
-
-            setFulfillmentKeyFromLineUniqueKey(rec, newLine);
-
-            added++;
-
-            log.debug('NEW FILLER LINE ADDED', {
-                newParentId: newParentId,
-                fillerItemId: fillerItemId,
-                quantity: parentQty,
-                line: newLine
-            });
-        }
-
-        log.audit('NEW FILLER LINES ADDED', {
-            newParentId: newParentId,
-            added: added
-        });
-
-        return added;
-    }
-
-    function getPackagingFillerItems(parentItemId) {
-        var fillerItems = [];
-
-        if (!parentItemId) {
-            return fillerItems;
-        }
-
-        search.create({
-            type: 'noninventoryitem',
-            filters: [
-                ['type', 'anyof', 'NonInvtPart'],
-                'AND',
-                ['internalid', 'anyof', parentItemId]
-            ],
-            columns: [
-                search.createColumn({
-                    name: PACKAGING_FILLER_FIELD
-                })
-            ]
-        }).run().each(function (result) {
-            var fillerValues = result.getValue({
-                name: PACKAGING_FILLER_FIELD
-            });
-
-            if (fillerValues) {
-                fillerItems = String(fillerValues).split(',');
-            }
-
-            return false;
-        });
-
-        return fillerItems;
-    }
-
-    function isFillerAlreadyAdded(rec, parentItemId, fillerItemId, parentQty) {
-        var lineCount = rec.getLineCount({
-            sublistId: ITEM_SUBLIST
-        });
-
-        for (var i = 0; i < lineCount; i++) {
-            var lineItemId = getLineValue(rec, 'item', i);
-            var lineParentItemId = getLineValue(rec, PARENT_COLUMN_FIELD, i);
-            var lineType = getLineValue(rec, TYPE_COLUMN_FIELD, i);
-
-            var lineQty = toNumber(rec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'quantity',
-                line: i
-            }));
-
-            if (
-                lineItemId === String(fillerItemId) &&
-                lineParentItemId === String(parentItemId) &&
-                lineType === String(TYPE_FILLER) &&
-                sameNumber(lineQty, parentQty)
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     function findNewLine(newRec, oldRec, oldLine) {
         var oldKey = getLineValue(oldRec, 'lineuniquekey', oldLine);
 
@@ -727,26 +424,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
          */
         if (oldLine < newLineCount) {
             return oldLine;
-        }
-
-        return -1;
-    }
-
-    function findLoadedLineByLineUniqueKey(rec, lineUniqueKey) {
-        if (!lineUniqueKey) {
-            return -1;
-        }
-
-        var lineCount = rec.getLineCount({
-            sublistId: ITEM_SUBLIST
-        });
-
-        for (var i = 0; i < lineCount; i++) {
-            var currentKey = getLineValue(rec, 'lineuniquekey', i);
-
-            if (currentKey === String(lineUniqueKey)) {
-                return i;
-            }
         }
 
         return -1;
@@ -783,42 +460,6 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
         } catch (e) {
             return '';
         }
-    }
-
-    function setFulfillmentKeyFromLineUniqueKey(rec, line) {
-        try {
-            var lineUniqueKey = rec.getSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: 'lineuniquekey',
-                line: line
-            });
-
-            if (lineUniqueKey) {
-                rec.setSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: FULFILLMENT_KEY_FIELD,
-                    line: line,
-                    value: String(lineUniqueKey)
-                });
-            }
-        } catch (e) {
-            log.debug('setFulfillmentKeyFromLineUniqueKey Error', {
-                line: line,
-                error: e.message
-            });
-        }
-    }
-
-    function toNumber(val) {
-        var num = parseFloat(val);
-        return isNaN(num) ? 0 : num;
-    }
-
-    function sameNumber(num1, num2) {
-        num1 = toNumber(num1);
-        num2 = toNumber(num2);
-
-        return Math.abs(num1 - num2) < 0.00001;
     }
 
     function hasKeys(obj) {
