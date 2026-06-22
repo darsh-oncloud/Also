@@ -33,7 +33,12 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var STATUS_HOLD = '10';
 
     var SEKO_LOCATION_ID = '7';
-    var IGNORE_ITEM_ID = '907';
+    // var IGNORE_ITEM_ID = '907';
+
+    var IGNORE_ITEM_IDS = {
+      '907': true,
+      '909': true
+    };
 
     function getScriptSearchId() {
         var searchId = runtime.getCurrentScript().getParameter({
@@ -505,8 +510,11 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
                     line: i
                 }) || '');
 
-                if (itemId === IGNORE_ITEM_ID) {
-                    continue;
+                // if (itemId === IGNORE_ITEM_ID) {
+                //     continue;
+                // }
+                if (isIgnoredItem(itemId)) {
+                   continue;
                 }
 
                 var qty = Number(toRec.getSublistValue({
@@ -703,9 +711,13 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
             return false;
         }
 
-        if (String(itemId || '') === IGNORE_ITEM_ID) {
-            return false;
-        }
+        // if (String(itemId || '') === IGNORE_ITEM_ID) {
+        //     return false;
+        // }
+
+       if (isIgnoredItem(itemId)) {
+           return false;
+       }
 
         return true;
     }
@@ -756,6 +768,10 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
             return true;
         });
     }
+
+    function isIgnoredItem(itemId) {
+         return IGNORE_ITEM_IDS[String(itemId || '')] === true;
+         }
 
     return {
         getInputData: getInputData,
