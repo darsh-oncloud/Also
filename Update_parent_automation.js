@@ -24,6 +24,7 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
     var TYPE_PARENT = '1';
     var TYPE_COMPONENT = '2';
+    var TYPE_FILLER = '5';
 
     function afterSubmit(context) {
         try {
@@ -253,6 +254,12 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
                     oldParentId,
                     newParentId
                 );
+
+              var updatedFillerCount = updateFillerLinesForNewParent(
+                  soRec,
+                  oldParentId,
+                  newParentId
+              );
 
                 log.audit('PARENT ITEM REPLACED AND COMPONENTS UPDATED', {
                     line: parentLine,
@@ -582,6 +589,47 @@ define(['N/record', 'N/search', 'N/log', 'N/runtime'], function (record, search,
 
         return false;
     }
+  function updateFillerLinesForNewParent(soRec, oldParentId, newParentId) {
+    var updated = 0;
+
+    var lineCount = soRec.getLineCount({
+        sublistId: ITEM_SUBLIST
+    });
+
+    for (var i = 0; i < lineCount; i++) {
+        var lineType = getLineValue(soRec, TYPE_COLUMN_FIELD, i);
+        var lineParent = getLineValue(soRec, PARENT_COLUMN_FIELD, i);
+
+        if (lineType !== TYPE_FILLER || lineParent !== String(oldParentId)) {
+            continue;
+        }
+
+        soRec.setSublistValue({
+            sublistId: ITEM_SUBLIST,
+            fieldId: PARENT_COLUMN_FIELD,
+            line: i,
+            value: newParentId
+        });
+
+        setFulfillmentKeyFromLineUniqueKey(soRec, i);
+
+        updated++;
+
+        log.debug('FILLER LINE UPDATED TO NEW PARENT', {
+            line: i,
+            oldParentId: oldParentId,
+            newParentId: newParentId
+        });
+    }
+
+    log.audit('FILLER LINES UPDATED TO NEW PARENT', {
+        oldParentId: oldParentId,
+        newParentId: newParentId,
+        updated: updated
+    });
+
+    return updated;
+}
 
     return {
         afterSubmit: afterSubmit
