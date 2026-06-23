@@ -131,33 +131,41 @@ define(['N/search', 'N/record', 'N/format', 'N/log'], (search, record, format, l
                     options: { enableSourcing: false, ignoreMandatoryFields: true }
                 });
 
-//               const parsedDate = format.parse({
-//     value: date,
-//     type: format.Type.DATE
-// });
+const parsedDate = format.parse({
+    value: date,
+    type: format.Type.DATE
+});
 
-// // Create GMT/UTC datetime from the delivery date
-// // This sets the time to 00:00:00 GMT for that delivery date
-// const gmtDateTime = new Date(Date.UTC(
-//     parsedDate.getFullYear(),
-//     parsedDate.getMonth(),
-//     parsedDate.getDate(),
-//     0,
-//     0,
-//     0
-// ));
+// Create UTC/GMT DateTime.
+// Using 12:00 PM UTC so the date does not move back one day in NetSuite UI.
+const utcDateTime = new Date(Date.UTC(
+    parsedDate.getFullYear(),
+    parsedDate.getMonth(),
+    parsedDate.getDate(),
+    12,
+    0,
+    0
+));
 
-// record.submitFields({
-//     type: recordType,
-//     id: itemId,
-//     values: {
-//         custitem_next_delivery_date: gmtDateTime
-//     },
-//     options: {
-//         enableSourcing: false,
-//         ignoreMandatoryFields: true
-//     }
-// });
+// UTC formatted string for logs / Celigo / Shopify metafield
+const utcDateTimeString = utcDateTime.toISOString().replace('.000Z', 'Z');
+
+record.submitFields({
+    type: recordType,
+    id: itemId,
+    values: {
+        custitem_next_delivery_date: utcDateTime
+    },
+    options: {
+        enableSourcing: false,
+        ignoreMandatoryFields: true
+    }
+});
+
+log.debug('Updated item ' + itemId, {
+    nextDeliveryDateFromTO: date,
+    utcDateTimeValue: utcDateTimeString
+});
 
 log.debug('Updated item ' + itemId, {
     nextDeliveryDateFromTO: date,
