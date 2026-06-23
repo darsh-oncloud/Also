@@ -123,13 +123,13 @@ define(['N/search', 'N/record', 'N/format', 'N/log'], (search, record, format, l
             }
 
             try {
-                const parsedDate = format.parse({ value: date, type: format.Type.DATE });
-                record.submitFields({
-                    type: recordType,
-                    id: itemId,
-                    values: { custitem_next_delivery_date: parsedDate },
-                    options: { enableSourcing: false, ignoreMandatoryFields: true }
-                });
+                // const parsedDate = format.parse({ value: date, type: format.Type.DATE });
+                // record.submitFields({
+                //     type: recordType,
+                //     id: itemId,
+                //     values: { custitem_next_delivery_date: parsedDate },
+                //     options: { enableSourcing: false, ignoreMandatoryFields: true }
+                // });
 
 const parsedDate = format.parse({
     value: date,
@@ -162,10 +162,6 @@ record.submitFields({
     }
 });
 
-log.debug('Updated item ' + itemId, {
-    nextDeliveryDateFromTO: date,
-    utcDateTimeValue: utcDateTimeString
-});
 
 log.debug('Updated item ' + itemId, {
     nextDeliveryDateFromTO: date,
