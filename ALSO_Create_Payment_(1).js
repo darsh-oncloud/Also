@@ -14,7 +14,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
             var invoiceId = context.newRecord.id;
             if (!invoiceId) {
-                log.debug('Exit', 'Invoice id missing');
+                log.debug('Exit', 'Invoice id missing')
                 return;
             }
 
@@ -27,13 +27,16 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
             var soLookup = search.lookupFields({
                 type: search.Type.SALES_ORDER,
                 id: salesOrderId,
-                columns: ['custbody_discount_removed']
+                columns: ['custbody_celigo_shopify_giftcard_id']
             });
 
-            var discountRemoved = (
-                soLookup.custbody_discount_removed === true ||
-                soLookup.custbody_discount_removed === 'T'
-            );
+            // var discountRemoved = (
+            //     soLookup.custbody_discount_removed === true ||
+            //     soLookup.custbody_discount_removed === 'T'
+            // );
+           var giftCardId = soLookup.custbody_celigo_shopify_giftcard_id;
+
+           var discountRemoved = giftCardId ? true : false;
 
             log.debug('Sales Order Check', {
                 invoiceId: invoiceId,
