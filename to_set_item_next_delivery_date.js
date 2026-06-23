@@ -123,13 +123,46 @@ define(['N/search', 'N/record', 'N/format', 'N/log'], (search, record, format, l
             }
 
             try {
-                const parsedDate = format.parse({ value: date, type: format.Type.DATE });
-                record.submitFields({
-                    type: recordType,
-                    id: itemId,
-                    values: { custitem_next_delivery_date: parsedDate },
-                    options: { enableSourcing: false, ignoreMandatoryFields: true }
-                });
+                // const parsedDate = format.parse({ value: date, type: format.Type.DATE });
+                // record.submitFields({
+                //     type: recordType,
+                //     id: itemId,
+                //     values: { custitem_next_delivery_date: parsedDate },
+                //     options: { enableSourcing: false, ignoreMandatoryFields: true }
+                // });
+
+              const parsedDate = format.parse({
+    value: date,
+    type: format.Type.DATE
+});
+
+// Create GMT/UTC datetime from the delivery date
+// This sets the time to 00:00:00 GMT for that delivery date
+const gmtDateTime = new Date(Date.UTC(
+    parsedDate.getFullYear(),
+    parsedDate.getMonth(),
+    parsedDate.getDate(),
+    0,
+    0,
+    0
+));
+
+record.submitFields({
+    type: recordType,
+    id: itemId,
+    values: {
+        custitem_next_delivery_date: gmtDateTime
+    },
+    options: {
+        enableSourcing: false,
+        ignoreMandatoryFields: true
+    }
+});
+
+log.debug('Updated item ' + itemId, {
+    nextDeliveryDateFromTO: date,
+    gmtDateTime: gmtDateTime.toISOString()
+});
                 log.debug('Updated item ' + itemId, 'Next delivery date -> ' + date);
             } catch (e) {
                 log.error('Failed to update item ' + itemId, e);
