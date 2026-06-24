@@ -225,7 +225,7 @@ const formatUtcDisplayDate = (dateObj) => {
     const monthName = monthNames[dateObj.getMonth()];
     const day = dateObj.getDate();
 
-    return monthName + ' ' + day + ', ' + year + ' at 12:00 AM UTC/GMT';
+    return monthName + ' ' + day + ', ' + year; //+ ' at 12:00 AM UTC/GMT';
 };
     return { afterSubmit };
 });
