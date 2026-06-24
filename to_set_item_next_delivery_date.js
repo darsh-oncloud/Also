@@ -173,59 +173,64 @@ define(['N/search', 'N/record', 'N/format', 'N/log'], (search, record, format, l
 //             }
 //         });
 //     };
-  const updateItems = (itemData) => {
-    Object.keys(itemData).forEach((itemId) => {
-        const { date, type } = itemData[itemId];
-        const recordType = ITEM_TYPE_TO_RECORD_TYPE[type];
+    const updateItems = (itemData) => {
+        Object.keys(itemData).forEach((itemId) => {
+            const { date, type } = itemData[itemId];
+            const recordType = ITEM_TYPE_TO_RECORD_TYPE[type];
 
-        if (!recordType) {
-            log.error('Unmapped item type', 'Item ' + itemId + ' has type "' + type + '" — skipped');
-            return;
-        }
+            if (!recordType) {
+                log.error('Unmapped item type', 'Item ' + itemId + ' has type "' + type + '" — skipped');
+                return;
+            }
 
-        try {
-            const parsedDate = format.parse({
-                value: date,
-                type: format.Type.DATE
-            });
+            try {
+                const parsedDate = format.parse({
+                    value: date,
+                    type: format.Type.DATE
+                });
 
-            // Create readable UTC/GMT text format:
-            // Example: June 13, 2026 at 12:00 AM UTC/GMT
-            const utcDateTimeString = formatUtcDisplayDate(parsedDate);
+                const utcDateTimeString = buildUtcDateTimeString(parsedDate);
 
-            record.submitFields({
-                type: recordType,
-                id: itemId,
-                values: {
-                    custitem_next_delivery_date: utcDateTimeString
-                },
-                options: {
-                    enableSourcing: false,
-                    ignoreMandatoryFields: true
-                }
-            });
+                record.submitFields({
+                    type: recordType,
+                    id: itemId,
+                    values: {
+                        custitem_next_delivery_date: utcDateTimeString
+                    },
+                    options: {
+                        enableSourcing: false,
+                        ignoreMandatoryFields: true
+                    }
+                });
 
-            log.debug('Updated item ' + itemId, {
-                nextDeliveryDateFromTO: date,
-                utcDateTimeString: utcDateTimeString
-            });
+                log.debug('Updated item ' + itemId, {
+                    nextDeliveryDateFromTO: date,
+                    utcDateTimeString: utcDateTimeString
+                });
 
-        } catch (e) {
-            log.error('Failed to update item ' + itemId, e);
-        }
-    });
-};
-const formatUtcDisplayDate = (dateObj) => {
-    const monthNames = [
-        'January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'
-    ];
+            } catch (e) {
+                log.error('Failed to update item ' + itemId, e);
+            }
+        });
+    };
 
-    const year = dateObj.getFullYear();
-    const monthName = monthNames[dateObj.getMonth()];
-    const day = dateObj.getDate();
+    /**
+     * Returns UTC format like:
+     * 2026-06-24T15:26:55Z
+     *
+     * Because TO expected delivery date is only a date, this script sets time as:
+     * 00:00:00Z
+     */
+    const buildUtcDateTimeString = (dateObj) => {
+        const year = dateObj.getFullYear();
+        const month = pad2(dateObj.getMonth() + 1);
+        const day = pad2(dateObj.getDate());
 
-    return monthName + ' ' + day + ', ' + year; //+ ' at 12:00 AM UTC/GMT';
-};
+        return year + '-' + month + '-' + day + 'T00:00:00Z';
+    };
+
+    const pad2 = (num) => {
+        return String(num).padStart(2, '0');
+    };
     return { afterSubmit };
 });
