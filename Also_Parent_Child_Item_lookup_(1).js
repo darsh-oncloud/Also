@@ -11,7 +11,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var RELATED_COMPONENT_FIELD = 'custitem_related_components';
     var SPECIAL_VENDOR_FIELD = 'custentity_special_order_vendor';
     var TYPE_COLUMN_FIELD = 'custcol_item_parentcomp';
-    var MERCH_ITEM_FIELD = 'custitem_merch_item';
+    var MERCH_ITEM_FIELD = 'custitem_item_category';
     var FULFILLMENT_KEY_FIELD = 'custcol_3pl_fulfillment_key';
     var PACKAGING_FILLER_FIELD = 'custitem_pcs_pckg_fill';
 
