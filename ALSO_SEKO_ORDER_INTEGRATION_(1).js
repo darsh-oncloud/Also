@@ -148,6 +148,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
             var eligibleLineByLineKey = {};
             var countForHeaderByLineKey = {};
             var allowAddonStatusUpdate = false;
+            var allowAddonStatusUpdate = false;
             var lineCount = soRec.getLineCount({ sublistId: 'item' });
             var i = 0;
 
@@ -210,6 +211,10 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
                     continue;
                 }
 
+                if (parentComp === PC_PARENT) {
+                    hasParentItemOnOrder = true;
+                }
+              
                 eligibleLineByLineKey[lineUniqueKey] = true;
 
                 if (
@@ -292,7 +297,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
                 }
             }
 
-            if (allowAddonStatusUpdate) {
+            if (allowAddonStatusUpdate || !hasParentItemOnOrder) {
                 for (i = 0; i < addonLines.length; i++) {
                     var addonTarget = getRegularTarget(addonLines[i]);
                     targetByLineKey[String(addonLines[i].lineUniqueKey)] = addonTarget;
