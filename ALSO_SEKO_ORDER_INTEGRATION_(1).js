@@ -148,7 +148,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
             var eligibleLineByLineKey = {};
             var countForHeaderByLineKey = {};
             var allowAddonStatusUpdate = false;
-            var allowAddonStatusUpdate = false;
+            var hasParentItemOnOrder = false;
             var lineCount = soRec.getLineCount({ sublistId: 'item' });
             var i = 0;
 
