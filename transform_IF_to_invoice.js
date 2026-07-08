@@ -20,6 +20,49 @@ define(['N/record', 'N/log', 'N/search', 'N/url', 'N/https','N/runtime'], functi
 
             const AR_account = 675;
 
+            // ✅ NEW: cache item merch checkbox lookup
+            var merchItemCache = {};
+
+            // ✅ NEW: keep old 908 logic + also check item field custitem_merch_item
+            function isInvoiceableMerchItem(itemId) {
+                itemId = parseInt(itemId, 10);
+
+                // Keep existing hardcoded merchandise item logic
+                if (itemId === MERCHANDISE_ITEM_ID) {
+                    return true;
+                }
+
+                if (!itemId) {
+                    return false;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(merchItemCache, itemId)) {
+                    return merchItemCache[itemId];
+                }
+
+                try {
+                    var itemFields = search.lookupFields({
+                        type: search.Type.ITEM,
+                        id: itemId,
+                        columns: ['custitem_merch_item']
+                    });
+
+                    var isMerchItem = itemFields.custitem_merch_item === true || itemFields.custitem_merch_item === 'T';
+
+                    merchItemCache[itemId] = isMerchItem;
+                    return isMerchItem;
+
+                } catch (e) {
+                    log.error('Item Merch Checkbox Lookup Failed', {
+                        itemId: itemId,
+                        error: e
+                    });
+
+                    merchItemCache[itemId] = false;
+                    return false;
+                }
+            }
+
             var fulfillment = context.newRecord;
             var fulfillmentId = fulfillment.id;
             var orderId = fulfillment.getValue('custbody_celigo_etail_order_id');
@@ -104,7 +147,7 @@ define(['N/record', 'N/log', 'N/search', 'N/url', 'N/https','N/runtime'], functi
                 })
                 log.debug('itemreceive',itemreceive);
 
-                if (lineItemId === MERCHANDISE_ITEM_ID && itemreceive) {
+                if (isInvoiceableMerchItem(lineItemId) && itemreceive) {
                     log.debug('Found Merchandise Item');
                     hasMerchandiseItem = true;
                 }
@@ -148,7 +191,7 @@ define(['N/record', 'N/log', 'N/search', 'N/url', 'N/https','N/runtime'], functi
                       line: i
                     })
 
-                    if (fulfilledItemId == MERCHANDISE_ITEM_ID && fulfilledOrderLine && itemreceive) {
+                    if (isInvoiceableMerchItem(fulfilledItemId) && fulfilledOrderLine && itemreceive) {
                         fulfillmentLocation = fulfillment.getSublistValue({
                             sublistId: 'item',
                             fieldId: 'location',
@@ -179,7 +222,7 @@ define(['N/record', 'N/log', 'N/search', 'N/url', 'N/https','N/runtime'], functi
                          line: i
                         })
 
-                        if (fulfilledItemId === MERCHANDISE_ITEM_ID && itemreceive) {
+                        if (isInvoiceableMerchItem(fulfilledItemId) && itemreceive) {
                             var etailOrderLineId = fulfillment.getSublistValue({
                                 sublistId: 'item',
                                 fieldId: 'custcol_celigo_etail_order_line_id',
@@ -215,9 +258,9 @@ define(['N/record', 'N/log', 'N/search', 'N/url', 'N/https','N/runtime'], functi
                             line: j
                         });
 
-                        // Check if invoice line should be kept (existing logic)
+                        // Check if invoice line should be kept (existing logic + merch checkbox item logic)
                         var hasMerchandiseOrderline = fulfilledEtailOrderLineIds.indexOf(invEtailOrderLineId) != -1;
-                        var shouldKeep = (invItemId === MERCHANDISE_ITEM_ID) && hasMerchandiseOrderline;
+                        var shouldKeep = isInvoiceableMerchItem(invItemId) && hasMerchandiseOrderline;
 
                         if (shouldKeep) {
                             keepMap[j] = true;
