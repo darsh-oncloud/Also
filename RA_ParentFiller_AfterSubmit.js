@@ -108,11 +108,8 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
                     continue;
                 }
 
-                if (existingParents[pId]) {
-                    log.debug('SKIP - ALREADY ON RA', 'Parent ' + pId + ' already present');
-                    continue;
-                }
-
+                // Validation: ALL configured required components must be on this RA
+                // (works the same whether the parent needs 1 component or several).
                 var returnedItems = componentGroups[pId];
                 var allReturned = true;
                 var minQty = null;
@@ -138,24 +135,36 @@ define(['N/record', 'N/search', 'N/log'], function (record, search, log) {
                     continue;
                 }
 
-                // All required components returned -> add Parent line
-                addLine(raRec, pId, minQty, '', TYPE_PARENT);
-                existingParents[pId] = true;
-                hasChanges = true;
-
-                // Add filler(s) for this parent, same quantity
+                // All required components are returned. Now handle parent + fillers
+                // independently of each other.
                 var fillerIds = packagingFillers[pId] || [];
+                var missingFillers = [];
+
                 for (r = 0; r < fillerIds.length; r++) {
                     var fillerId = String(fillerIds[r]).replace(/\s+/g, '');
-                    if (!fillerId) continue;
-                    if (existingFillers[pId + '|' + fillerId]) continue;
+                    if (fillerId && !existingFillers[pId + '|' + fillerId]) {
+                        missingFillers.push(fillerId);
+                    }
+                }
 
-                    addLine(raRec, fillerId, minQty, pId, TYPE_FILLER);
-                    existingFillers[pId + '|' + fillerId] = true;
+                if (existingParents[pId] && !missingFillers.length) {
+                    log.debug('SKIP - PARENT + FILLERS ALREADY PRESENT', 'Parent ' + pId);
+                    continue;
+                }
+
+                if (!existingParents[pId]) {
+                    addLine(raRec, pId, minQty, '', TYPE_PARENT);
+                    existingParents[pId] = true;
                     hasChanges = true;
                 }
 
-                addedParents.push({ parentId: pId, quantity: minQty });
+                for (r = 0; r < missingFillers.length; r++) {
+                    addLine(raRec, missingFillers[r], minQty, pId, TYPE_FILLER);
+                    existingFillers[pId + '|' + missingFillers[r]] = true;
+                    hasChanges = true;
+                }
+
+                addedParents.push({ parentId: pId, quantity: minQty, fillersAdded: missingFillers });
             }
 
             log.audit('RA SUMMARY', {
