@@ -28,7 +28,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
     var STATUS_NOT_RELEASED = '4';
     var STATUS_PARTIAL_READY = '6';
     var STATUS_PARTIAL_SENT = '7';
-    var STATUS_FULFILLED = '14';
+    var STATUS_FULFILLED = '8';
     var STATUS_PARTIAL_FULFILLED = '9';
     var STATUS_HOLD = '10';
 
@@ -148,7 +148,7 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
             var eligibleLineByLineKey = {};
             var countForHeaderByLineKey = {};
             var allowAddonStatusUpdate = false;
-            var hasParentItemOnOrder = false;
+            var allowAddonStatusUpdate = false;
             var lineCount = soRec.getLineCount({ sublistId: 'item' });
             var i = 0;
 
