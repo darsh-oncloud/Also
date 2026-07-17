@@ -5,51 +5,73 @@
 define(['N/https', 'N/log'], (https, log) => {
 
     const CONFIG = {
-        SHOP: 'your-store.myshopify.com',
-        TOKEN: 'ENTER_SHOPIFY_TOKEN',
+        SHOP: 'ride-also.myshopify.com',
+        TOKEN: 'REPLACE_WITH_SHOPIFY_TOKEN',
         API_VERSION: '2026-07',
 
-        LOCATION_ID: '81988845792',
-        LOCATION_GID: 'gid://shopify/Location/81988845792'
+        LOCATION_ID:
+            'gid://shopify/Location/81988845792', // 630 Hansen Way
+
+        /*
+         * 0 = retrieve all matching inventory items.
+         * Use 10 for initial testing.
+         */
+        ITEM_LIMIT: 0
     };
 
 
-    const QUERY = `
-        query Get630Orders(
-            $after: String,
-            $query: String!
+    const INVENTORY_QUERY = `
+        query Get630InventoryItems(
+            $locationId: ID!,
+            $after: String
         ) {
-            fulfillmentOrders(
-                first: 100,
-                after: $after,
-                includeClosed: false,
-                query: $query
-            ) {
-                pageInfo {
-                    hasNextPage
-                    endCursor
-                }
+            location(id: $locationId) {
+                id
+                name
 
-                nodes {
-                    id
-                    status
-                    requestStatus
-
-                    assignedLocation {
-                        name
-                        location {
-                            id
-                            name
-                        }
+                inventoryLevels(
+                    first: 100,
+                    after: $after,
+                    includeInactive: false
+                ) {
+                    pageInfo {
+                        hasNextPage
+                        endCursor
                     }
 
-                    order {
+                    nodes {
                         id
-                        name
-                        createdAt
-                        closed
-                        cancelledAt
-                        displayFulfillmentStatus
+                        isActive
+
+                        quantities(
+                            names: [
+                                "available",
+                                "committed",
+                                "on_hand"
+                            ]
+                        ) {
+                            name
+                            quantity
+                        }
+
+                        item {
+                            id
+                            sku
+                            tracked
+
+                            variants(first: 10) {
+                                nodes {
+                                    id
+                                    title
+
+                                    product {
+                                        id
+                                        title
+                                        status
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -59,79 +81,75 @@ define(['N/https', 'N/log'], (https, log) => {
 
     function getInputData() {
 
-        const matchedOrders = {};
+        const items = [];
         let after = null;
         let hasNextPage = true;
 
         while (hasNextPage) {
 
-            const data = graphql(QUERY, {
-                after: after,
-                query:
-                    'assigned_location_id:' +
-                    CONFIG.LOCATION_ID
-            });
+            const data = graphql(
+                INVENTORY_QUERY,
+                {
+                    locationId: CONFIG.LOCATION_ID,
+                    after: after
+                }
+            );
+
+            if (!data.location) {
+                throw new Error(
+                    '630 Hansen Way location was not found.'
+                );
+            }
 
             const connection =
-                data.fulfillmentOrders;
+                data.location.inventoryLevels;
 
-            const fulfillmentOrders =
+            const levels =
                 connection.nodes || [];
 
+            for (let i = 0; i < levels.length; i++) {
 
-            fulfillmentOrders.forEach(fo => {
-
-                const order = fo.order;
-
-                const locationId =
-                    fo.assignedLocation &&
-                    fo.assignedLocation.location
-                        ? fo.assignedLocation.location.id
-                        : '';
-
+                const level = levels[i];
+                const item = level.item;
 
                 /*
-                 * Only open, non-cancelled orders
-                 * currently assigned to 630 Hansen Way.
-                 *
-                 * No fulfillment-status filter.
+                 * Include only:
+                 * 1. Active inventory level at 630.
+                 * 2. Track quantity enabled.
                  */
                 if (
-                    !order ||
-                    order.closed ||
-                    order.cancelledAt ||
-                    locationId !== CONFIG.LOCATION_GID
+                    !level.isActive ||
+                    !item ||
+                    !item.tracked
                 ) {
-                    return;
+                    continue;
                 }
 
+                items.push({
+                    inventoryLevelId: level.id,
+                    inventoryItemId: item.id,
+                    sku: item.sku || '',
+                    tracked: item.tracked,
+                    quantities: level.quantities || [],
+                    variants:
+                        item.variants &&
+                        item.variants.nodes
+                            ? item.variants.nodes
+                            : []
+                });
 
-                if (!matchedOrders[order.id]) {
-
-                    matchedOrders[order.id] = {
-                        orderId: order.id,
-                        orderNumber: order.name,
-                        createdAt: order.createdAt,
-
-                        fulfillmentStatus:
-                            order.displayFulfillmentStatus,
-
-                        location:
-                            fo.assignedLocation.name,
-
-                        fulfillmentOrders: []
-                    };
+                if (
+                    CONFIG.ITEM_LIMIT > 0 &&
+                    items.length >= CONFIG.ITEM_LIMIT
+                ) {
+                    hasNextPage = false;
+                    break;
                 }
+            }
 
-
-                matchedOrders[order.id]
-                    .fulfillmentOrders.push({
-                        id: fo.id,
-                        status: fo.status,
-                        requestStatus: fo.requestStatus
-                    });
-            });
-
+            if (!hasNextPage) {
+                break;
+            }
 
             hasNextPage =
                 connection.pageInfo.hasNextPage;
@@ -140,73 +158,111 @@ define(['N/https', 'N/log'], (https, log) => {
                 connection.pageInfo.endCursor;
         }
 
-
-        const orders =
-            Object.values(matchedOrders);
-
-
         log.audit({
-            title: 'OPEN ORDERS FOUND AT 630',
+            title: 'ITEMS FOUND AT 630',
             details: {
-                count: orders.length
+                count: items.length,
+                location: '630 Hansen Way',
+                validation:
+                    'Track quantity enabled and 630 active',
+                message:
+                    'Read-only process. Nothing was changed.'
             }
         });
 
-
-        return orders;
+        return items;
     }
 
 
     function map(context) {
 
-        const order =
+        const item =
             JSON.parse(context.value);
 
+        const variants =
+            item.variants || [];
+
+        const productDetails =
+            variants.map(variant => ({
+                productId:
+                    variant.product
+                        ? variant.product.id
+                        : '',
+
+                product:
+                    variant.product
+                        ? variant.product.title
+                        : '',
+
+                productStatus:
+                    variant.product
+                        ? variant.product.status
+                        : '',
+
+                variantId:
+                    variant.id,
+
+                variant:
+                    variant.title
+            }));
 
         log.audit({
             title:
-                'OPEN ORDER AT 630 - ' +
-                order.orderNumber,
+                'ITEM AT 630 - ' +
+                (item.sku || item.inventoryItemId),
 
             details: {
-                orderNumber:
-                    order.orderNumber,
+                sku:
+                    item.sku,
 
-                orderId:
-                    order.orderId,
+                inventoryItemId:
+                    item.inventoryItemId,
 
-                createdAt:
-                    order.createdAt,
-
-                fulfillmentStatus:
-                    order.fulfillmentStatus,
+                inventoryLevelId:
+                    item.inventoryLevelId,
 
                 location:
-                    order.location,
+                    '630 Hansen Way',
 
-                fulfillmentOrders:
-                    order.fulfillmentOrders
+                trackQuantity:
+                    item.tracked,
+
+                quantities:
+                    item.quantities,
+
+                products:
+                    productDetails
             }
         });
 
-
         context.write({
-            key: order.orderId,
-            value: order.orderNumber
+            key: item.inventoryItemId,
+            value: JSON.stringify({
+                status: 'FOUND',
+                sku: item.sku
+            })
         });
     }
 
 
     function summarize(summary) {
 
-        let totalOrders = 0;
+        let totalItems = 0;
 
+        summary.output.iterator().each(
+            (key, value) => {
+                totalItems++;
+                return true;
+            }
+        );
 
-        summary.output.iterator().each(() => {
-            totalOrders++;
-            return true;
-        });
+        if (summary.inputSummary.error) {
 
+            log.error({
+                title: 'INPUT ERROR',
+                details: summary.inputSummary.error
+            });
+        }
 
         summary.mapSummary.errors.iterator().each(
             (key, error) => {
@@ -220,24 +276,29 @@ define(['N/https', 'N/log'], (https, log) => {
             }
         );
 
-
-        if (summary.inputSummary.error) {
-
-            log.error({
-                title: 'INPUT ERROR',
-                details: summary.inputSummary.error
-            });
-        }
-
-
         log.audit({
-            title: '630 ORDER SEARCH COMPLETED',
+            title: '630 ITEM SEARCH COMPLETED',
             details: {
-                openOrdersFound: totalOrders,
-                usage: summary.usage,
-                yields: summary.yields,
+                totalInventoryItems:
+                    totalItems,
+
+                location:
+                    '630 Hansen Way',
+
+                trackQuantity:
+                    'Enabled',
+
+                usage:
+                    summary.usage,
+
+                concurrency:
+                    summary.concurrency,
+
+                yields:
+                    summary.yields,
+
                 message:
-                    'Read-only process. No Shopify orders were changed.'
+                    'Read-only process. No Shopify inventory locations were changed.'
             }
         });
     }
@@ -247,11 +308,14 @@ define(['N/https', 'N/log'], (https, log) => {
 
         const response = https.post({
             url:
-                `https://${CONFIG.SHOP}/admin/api/` +
-                `${CONFIG.API_VERSION}/graphql.json`,
+                `https://${CONFIG.SHOP}` +
+                `/admin/api/${CONFIG.API_VERSION}` +
+                `/graphql.json`,
 
             headers: {
-                'Content-Type': 'application/json',
+                'Content-Type':
+                    'application/json',
+
                 'X-Shopify-Access-Token':
                     CONFIG.TOKEN
             },
@@ -261,7 +325,6 @@ define(['N/https', 'N/log'], (https, log) => {
                 variables: variables
             })
         });
-
 
         if (
             Number(response.code) < 200 ||
@@ -273,20 +336,19 @@ define(['N/https', 'N/log'], (https, log) => {
             );
         }
 
-
         const body =
             JSON.parse(response.body || '{}');
 
-
-        if (body.errors && body.errors.length) {
-
+        if (
+            body.errors &&
+            body.errors.length
+        ) {
             throw new Error(
                 body.errors
                     .map(error => error.message)
                     .join(' | ')
             );
         }
-
 
         return body.data;
     }
