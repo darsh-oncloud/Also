@@ -3,343 +3,627 @@
  * @NScriptType UserEventScript
  * @NModuleScope SameAccount
  */
-define(['N/record', 'N/log', 'N/search', 'N/url', 'N/https','N/runtime'], function (record, log, search, url, https, runtime) {
+define(
+    ['N/record', 'N/log', 'N/search', 'N/url', 'N/https', 'N/runtime'],
+    function (record, log, search, url, https, runtime) {
 
-    function afterSubmit(context) {
-        try {
-            // Only trigger on create or edit
-            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) {
-              return;
-            }
+        function afterSubmit(context) {
+            try {
+                // Existing trigger logic remains unchanged
+                if (
+                    context.type !== context.UserEventType.CREATE &&
+                    context.type !== context.UserEventType.EDIT
+                ) {
+                    return;
+                }
 
-            const TM_B_ITEM_ID = 909;
-            const MERCHANDISE_ITEM_ID = 908;
+                const TM_B_ITEM_ID = 909;
+                const AR_ACCOUNT = 675;
 
-            // ✅ NEW: promo discount item (only used for "next line after 908" logic)
-            const PROMO_DISCOUNT_ITEM_ID = 911;
+                // Same custom column field exists on:
+                // Sales Order, Item Fulfillment, and Invoice
+                const FULFILLMENT_KEY_FIELD =
+                    'custcol_3pl_fulfillment_key';
 
-            const AR_account = 675;
+                var fulfillment = context.newRecord;
+                var fulfillmentId = fulfillment.id;
 
-            var fulfillment = context.newRecord;
-            var fulfillmentId = fulfillment.id;
-            var orderId = fulfillment.getValue('custbody_celigo_etail_order_id');
-
-            var lineCount = fulfillment.getLineCount({ sublistId: 'item' });
-            log.debug('lineCount', lineCount);
-
-            var createdFrom = fulfillment.getValue('createdfrom');
-            if (!createdFrom) {
-                log.error('Missing Source', 'Item Fulfillment has no createdfrom (Sales Order) field.');
-                return;
-            }
-
-            if (!orderId) {
-                log.debug('Skip', 'custbody_celigo_etail_order_id is empty. Skipping invoice creation.');
-                return;
-            }
-
-            var soRec = record.load({
-               type: record.Type.SALES_ORDER,
-               id: createdFrom,
-               isDynamic: true
-            });
-
-            // Loop through lines and mark them closed
-            var soLineCount = soRec.getLineCount({ sublistId: 'item' });
-
-            log.debug('soLineCount', soLineCount);
-
-            if (soLineCount === 1) {
-                var firstItemId = fulfillment.getSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'item',
-                    line: 0
+                var orderId = fulfillment.getValue({
+                    fieldId: 'custbody_celigo_etail_order_id'
                 });
 
-                if (parseInt(firstItemId, 10) === TM_B_ITEM_ID) {
-                  log.debug('Skip', 'Only one line item and it is TM_B_ITEM_ID (' + TM_B_ITEM_ID + '). Skipping invoice creation.');
+                var lineCount = fulfillment.getLineCount({
+                    sublistId: 'item'
+                });
 
-                  try {
-                        for (var i = 0; i < soLineCount; i++) {
-                            soRec.selectLine({ sublistId: 'item', line: i });
-                            soRec.setCurrentSublistValue({
-                                sublistId: 'item',
-                                fieldId: 'isclosed',
-                                value: true
-                            });
-                            soRec.commitLine({ sublistId: 'item' });
-                        }
+                log.debug({
+                    title: 'Item Fulfillment Line Count',
+                    details: lineCount
+                });
 
-                        // Save Sales Order
-                        var soId = soRec.save({
-                            enableSourcing: true,
-                            ignoreMandatoryFields: true
-                        });
+                var createdFrom = fulfillment.getValue({
+                    fieldId: 'createdfrom'
+                });
 
-                        log.audit('Sales Order Closed', 'Sales Order ' + soId + ' was closed since only TM_B_ITEM_ID was fulfilled.');
-                    } catch (e) {
-                        log.debug("Error in closing SO", e);
-                    }
-
-                  return;
-                }
-            }
-
-            var fulfillmentLocation = '';
-
-            var hasMerchandiseItem = false;
-            var hasDepositeItem = false;
-            var invoiceIdIs = null;
-            for (var i = 0; i < lineCount; i++) {
-                var lineItemId = parseInt(fulfillment.getSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'item',
-                    line: i
-                }), 10);
-
-                var itemreceive = fulfillment.getSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'itemreceive',
-                    line: i
-                })
-                log.debug('itemreceive',itemreceive);
-
-                if (lineItemId === MERCHANDISE_ITEM_ID && itemreceive) {
-                    log.debug('Found Merchandise Item');
-                    hasMerchandiseItem = true;
+                if (!createdFrom) {
+                    log.error({
+                        title: 'Missing Source',
+                        details:
+                            'Item Fulfillment has no Created From Sales Order.'
+                    });
+                    return;
                 }
 
-                if (lineItemId === TM_B_ITEM_ID && itemreceive) {
-                    log.debug('Found TM_B Item on IF');
-                    hasDepositeItem = true;
+                if (!orderId) {
+                    log.debug({
+                        title: 'Skip',
+                        details:
+                            'custbody_celigo_etail_order_id is empty. ' +
+                            'Skipping invoice creation.'
+                    });
+                    return;
                 }
-            }
-            log.debug('hasMerchandiseItem', hasMerchandiseItem);
 
-            if (hasMerchandiseItem) {
-                // Transform Sales Order into Invoice
-                var invoiceRec = record.transform({
-                    fromType: record.Type.SALES_ORDER,
-                    fromId: createdFrom,
-                    toType: record.Type.INVOICE,
+                /*
+                 * Existing Sales Order loading logic
+                 */
+                var soRec = record.load({
+                    type: record.Type.SALES_ORDER,
+                    id: createdFrom,
                     isDynamic: true
                 });
-                invoiceRec.setValue({fieldId:'account',value:AR_account})
-                invoiceRec.setValue({ fieldId: 'shippingcost', value: 0 });
 
-                // Collect fulfilled orderline values from Item Fulfillment
-                var fulfilledOrderLines = [];
-                for (var i = 0; i < lineCount; i++) {
-                    var fulfilledItemId = fulfillment.getSublistValue({
+                var soLineCount = soRec.getLineCount({
+                    sublistId: 'item'
+                });
+
+                log.debug({
+                    title: 'Sales Order Line Count',
+                    details: soLineCount
+                });
+
+                /*
+                 * Existing single TM-B item logic remains unchanged
+                 */
+                if (soLineCount === 1) {
+                    var firstItemId = fulfillment.getSublistValue({
                         sublistId: 'item',
                         fieldId: 'item',
-                        line: i
+                        line: 0
                     });
 
-                    var fulfilledOrderLine = fulfillment.getSublistValue({
-                        sublistId: 'item',
-                        fieldId: 'orderline',
-                        line: i
-                    });
-
-                     var itemreceive = fulfillment.getSublistValue({
-                      sublistId: 'item',
-                      fieldId: 'itemreceive',
-                      line: i
-                    })
-
-                    if (fulfilledItemId == MERCHANDISE_ITEM_ID && fulfilledOrderLine && itemreceive) {
-                        fulfillmentLocation = fulfillment.getSublistValue({
-                            sublistId: 'item',
-                            fieldId: 'location',
-                            line: i
+                    if (
+                        parseInt(firstItemId, 10) === TM_B_ITEM_ID
+                    ) {
+                        log.debug({
+                            title: 'Skip',
+                            details:
+                                'Only one line exists and it is TM-B item ' +
+                                TM_B_ITEM_ID +
+                                '. Skipping invoice creation.'
                         });
-                        fulfilledOrderLines.push(parseInt(fulfilledOrderLine, 10));
+
+                        try {
+                            for (
+                                var closeLine = 0;
+                                closeLine < soLineCount;
+                                closeLine++
+                            ) {
+                                soRec.selectLine({
+                                    sublistId: 'item',
+                                    line: closeLine
+                                });
+
+                                soRec.setCurrentSublistValue({
+                                    sublistId: 'item',
+                                    fieldId: 'isclosed',
+                                    value: true
+                                });
+
+                                soRec.commitLine({
+                                    sublistId: 'item'
+                                });
+                            }
+
+                            var soId = soRec.save({
+                                enableSourcing: true,
+                                ignoreMandatoryFields: true
+                            });
+
+                            log.audit({
+                                title: 'Sales Order Closed',
+                                details:
+                                    'Sales Order ' +
+                                    soId +
+                                    ' was closed because it only contained ' +
+                                    'the TM-B item.'
+                            });
+                        } catch (closeError) {
+                            log.error({
+                                title: 'Error Closing Sales Order',
+                                details: closeError
+                            });
+                        }
+
+                        return;
                     }
                 }
 
-                log.debug('Fulfilled Order Lines', fulfilledOrderLines);
+                var fulfillmentLocation = '';
+                var hasInvoiceableFulfilledLine = false;
+                var hasDepositeItem = false;
+                var invoiceIdIs = null;
 
-                if (fulfilledOrderLines.length) {
-                    var invoiceLineCount = invoiceRec.getLineCount({ sublistId: 'item' });
-                    log.debug('Before Filtering - Invoice Lines', invoiceLineCount);
-
-                    // Collect fulfilled Celigo etail order line IDs
-                    var fulfilledEtailOrderLineIds = [];
-                    for (var i = 0; i < lineCount; i++) {
-                        var fulfilledItemId = parseInt(fulfillment.getSublistValue({
+                /*
+                 * Check fulfillment lines.
+                 *
+                 * Any received line with a 3PL Fulfillment Key is invoiceable,
+                 * except the existing TM-B special item.
+                 */
+                for (var i = 0; i < lineCount; i++) {
+                    var lineItemId = parseInt(
+                        fulfillment.getSublistValue({
                             sublistId: 'item',
                             fieldId: 'item',
                             line: i
-                        }), 10);
+                        }),
+                        10
+                    );
 
-                        var itemreceive = fulfillment.getSublistValue({
-                         sublistId: 'item',
-                         fieldId: 'itemreceive',
-                         line: i
-                        })
+                    var itemReceive =
+                        fulfillment.getSublistValue({
+                            sublistId: 'item',
+                            fieldId: 'itemreceive',
+                            line: i
+                        });
 
-                        if (fulfilledItemId === MERCHANDISE_ITEM_ID && itemreceive) {
-                            var etailOrderLineId = fulfillment.getSublistValue({
+                    var fulfillmentKey =
+                        fulfillment.getSublistValue({
+                            sublistId: 'item',
+                            fieldId: FULFILLMENT_KEY_FIELD,
+                            line: i
+                        });
+
+                    log.debug({
+                        title: 'Fulfillment Line',
+                        details: {
+                            line: i,
+                            itemId: lineItemId,
+                            itemReceive: itemReceive,
+                            fulfillmentKey: fulfillmentKey
+                        }
+                    });
+
+                    if (
+                        itemReceive &&
+                        fulfillmentKey &&
+                        lineItemId !== TM_B_ITEM_ID
+                    ) {
+                        hasInvoiceableFulfilledLine = true;
+                    }
+
+                    if (
+                        lineItemId === TM_B_ITEM_ID &&
+                        itemReceive
+                    ) {
+                        log.debug({
+                            title: 'Found TM-B Item',
+                            details: {
+                                line: i,
+                                itemId: lineItemId
+                            }
+                        });
+
+                        hasDepositeItem = true;
+                    }
+                }
+
+                log.debug({
+                    title: 'Has Invoiceable Fulfilled Line',
+                    details: hasInvoiceableFulfilledLine
+                });
+
+                if (hasInvoiceableFulfilledLine) {
+                    /*
+                     * Transform the Sales Order into an Invoice.
+                     */
+                    var invoiceRec = record.transform({
+                        fromType: record.Type.SALES_ORDER,
+                        fromId: createdFrom,
+                        toType: record.Type.INVOICE,
+                        isDynamic: true
+                    });
+
+                    invoiceRec.setValue({
+                        fieldId: 'account',
+                        value: AR_ACCOUNT
+                    });
+
+                    invoiceRec.setValue({
+                        fieldId: 'shippingcost',
+                        value: 0
+                    });
+
+                    /*
+                     * Collect received Item Fulfillment lines by the
+                     * custom 3PL Fulfillment Key.
+                     *
+                     * Example:
+                     * {
+                     *     "638020": { quantity: 1 },
+                     *     "638021": { quantity: 1 }
+                     * }
+                     */
+                    var fulfilledLinesByKey = {};
+
+                    for (
+                        var fulfillmentLine = 0;
+                        fulfillmentLine < lineCount;
+                        fulfillmentLine++
+                    ) {
+                        var fulfilledItemId = parseInt(
+                            fulfillment.getSublistValue({
                                 sublistId: 'item',
-                                fieldId: 'custcol_celigo_etail_order_line_id',
-                                line: i
+                                fieldId: 'item',
+                                line: fulfillmentLine
+                            }),
+                            10
+                        );
+
+                        var lineReceived =
+                            fulfillment.getSublistValue({
+                                sublistId: 'item',
+                                fieldId: 'itemreceive',
+                                line: fulfillmentLine
                             });
 
-                            if (etailOrderLineId) {
-                                fulfilledEtailOrderLineIds.push(etailOrderLineId);
-                            }
+                        var lineFulfillmentKey =
+                            fulfillment.getSublistValue({
+                                sublistId: 'item',
+                                fieldId: FULFILLMENT_KEY_FIELD,
+                                line: fulfillmentLine
+                            });
+
+                        var fulfilledQuantity = Number(
+                            fulfillment.getSublistValue({
+                                sublistId: 'item',
+                                fieldId: 'quantity',
+                                line: fulfillmentLine
+                            })
+                        ) || 0;
+
+                        var lineLocation =
+                            fulfillment.getSublistValue({
+                                sublistId: 'item',
+                                fieldId: 'location',
+                                line: fulfillmentLine
+                            });
+
+                        /*
+                         * Preserve the existing TM-B special handling.
+                         * All other received lines with a key are collected.
+                         */
+                        if (
+                            !lineReceived ||
+                            !lineFulfillmentKey ||
+                            fulfilledItemId === TM_B_ITEM_ID
+                        ) {
+                            continue;
+                        }
+
+                        var key = String(lineFulfillmentKey);
+
+                        /*
+                         * The key should be unique, but adding quantities
+                         * also protects against the same key appearing more
+                         * than once unexpectedly.
+                         */
+                        if (!fulfilledLinesByKey[key]) {
+                            fulfilledLinesByKey[key] = {
+                                quantity: 0,
+                                location: lineLocation || ''
+                            };
+                        }
+
+                        fulfilledLinesByKey[key].quantity +=
+                            fulfilledQuantity;
+
+                        if (
+                            !fulfillmentLocation &&
+                            lineLocation
+                        ) {
+                            fulfillmentLocation = lineLocation;
                         }
                     }
 
-                    log.debug('Fulfilled Etail Order Line IDs', fulfilledEtailOrderLineIds);
+                    log.debug({
+                        title: 'Fulfilled Lines By 3PL Key',
+                        details: fulfilledLinesByKey
+                    });
 
-                    // Filter invoice lines
-                    var linesToRemove = [];
+                    if (
+                        Object.keys(fulfilledLinesByKey).length > 0
+                    ) {
+                        var invoiceLineCount =
+                            invoiceRec.getLineCount({
+                                sublistId: 'item'
+                            });
 
-                    log.debug('invoiceLineCount', invoiceLineCount);
-
-                    // ✅ NEW: keep-map so we can also keep "next line 911" after a kept 908
-                    var keepMap = {}; // { lineIndex: true }
-
-                    for (var j = 0; j < invoiceLineCount; j++) {
-                        var invItemId = parseInt(invoiceRec.getSublistValue({
-                            sublistId: 'item',
-                            fieldId: 'item',
-                            line: j
-                        }), 10);
-
-                        var invEtailOrderLineId = invoiceRec.getSublistValue({
-                            sublistId: 'item',
-                            fieldId: 'custcol_celigo_etail_order_line_id',
-                            line: j
+                        log.debug({
+                            title: 'Invoice Lines Before Filtering',
+                            details: invoiceLineCount
                         });
 
-                        // Check if invoice line should be kept (existing logic)
-                        var hasMerchandiseOrderline = fulfilledEtailOrderLineIds.indexOf(invEtailOrderLineId) != -1;
-                        var shouldKeep = (invItemId === MERCHANDISE_ITEM_ID) && hasMerchandiseOrderline;
+                        var keepMap = {};
+                        var usedKeys = {};
 
-                        if (shouldKeep) {
-                            keepMap[j] = true;
-
-                            // ✅ NEW: if NEXT line after this kept 908 is 911, keep it too
-                            if (j + 1 < invoiceLineCount) {
-                                var nextItemId = parseInt(invoiceRec.getSublistValue({
+                        /*
+                         * Read the same custom field from the transformed
+                         * Invoice lines.
+                         */
+                        for (
+                            var invoiceLine = 0;
+                            invoiceLine < invoiceLineCount;
+                            invoiceLine++
+                        ) {
+                            var invoiceItemId = parseInt(
+                                invoiceRec.getSublistValue({
                                     sublistId: 'item',
                                     fieldId: 'item',
-                                    line: j + 1
-                                }), 10);
+                                    line: invoiceLine
+                                }),
+                                10
+                            );
 
-                                log.debug('Check Next Line For Discount', {
-                                  keepLine: j,
-                                  keepItem: invItemId,
-                                  nextLine: (j + 1),
-                                  nextItemId: nextItemId
+                            var invoiceFulfillmentKey =
+                                invoiceRec.getSublistValue({
+                                    sublistId: 'item',
+                                    fieldId:
+                                        FULFILLMENT_KEY_FIELD,
+                                    line: invoiceLine
                                 });
 
-                                if (nextItemId === PROMO_DISCOUNT_ITEM_ID) {
-                                    keepMap[j + 1] = true;
-                                    log.audit('Keeping Promo Discount Line', {
-                                      baseMerchLine: j,
-                                      promoLine: (j + 1),
-                                      promoItemId: nextItemId
+                            var invoiceKey = String(
+                                invoiceFulfillmentKey || ''
+                            );
+
+                            var matchingFulfillmentLine =
+                                fulfilledLinesByKey[invoiceKey];
+
+                            log.debug({
+                                title: 'Invoice Key Matching',
+                                details: {
+                                    invoiceLine: invoiceLine,
+                                    itemId: invoiceItemId,
+                                    invoiceKey: invoiceKey,
+                                    matched:
+                                        Boolean(
+                                            matchingFulfillmentLine
+                                        )
+                                }
+                            });
+
+                            /*
+                             * Keep only the Invoice line whose custom key
+                             * exists on the Item Fulfillment.
+                             */
+                            if (
+                                matchingFulfillmentLine &&
+                                !usedKeys[invoiceKey]
+                            ) {
+                                keepMap[invoiceLine] = true;
+                                usedKeys[invoiceKey] = true;
+
+                                /*
+                                 * Set the Invoice quantity equal to the
+                                 * fulfilled quantity.
+                                 */
+                                if (
+                                    matchingFulfillmentLine.quantity > 0
+                                ) {
+                                    invoiceRec.selectLine({
+                                        sublistId: 'item',
+                                        line: invoiceLine
+                                    });
+
+                                    invoiceRec.setCurrentSublistValue({
+                                        sublistId: 'item',
+                                        fieldId: 'quantity',
+                                        value:
+                                            matchingFulfillmentLine
+                                                .quantity
+                                    });
+
+                                    invoiceRec.commitLine({
+                                        sublistId: 'item'
                                     });
                                 }
                             }
                         }
-                    }
 
-                    for (var x = 0; x < invoiceLineCount; x++) {
-                        if (!keepMap[x]) {
-                          linesToRemove.push(x);
+                        /*
+                         * Collect all unmatched Invoice lines.
+                         */
+                        var linesToRemove = [];
+
+                        for (
+                            var checkLine = 0;
+                            checkLine < invoiceLineCount;
+                            checkLine++
+                        ) {
+                            if (!keepMap[checkLine]) {
+                                linesToRemove.push(checkLine);
+                            }
                         }
-                    }
 
-                    log.debug('Lines to Remove', linesToRemove);
-
-                    // Remove lines in descending order to avoid re-index issues
-                    for (var r = linesToRemove.length - 1; r >= 0; r--) {
-                        invoiceRec.removeLine({
-                            sublistId: 'item',
-                            line: linesToRemove[r]
+                        log.debug({
+                            title: 'Invoice Lines To Remove',
+                            details: linesToRemove
                         });
-                    }
 
-                    log.debug('After Filtering - Invoice Lines', invoiceRec.getLineCount({ sublistId: 'item' }));
+                        /*
+                         * Remove lines from the bottom upward so line
+                         * indexes do not change during removal.
+                         */
+                        for (
+                            var removeIndex =
+                                linesToRemove.length - 1;
+                            removeIndex >= 0;
+                            removeIndex--
+                        ) {
+                            invoiceRec.removeLine({
+                                sublistId: 'item',
+                                line:
+                                    linesToRemove[removeIndex]
+                            });
+                        }
 
-                    // Apply location and save invoice
-                    if (fulfillmentLocation) {
-                        invoiceRec.setValue({ fieldId: 'location', value: fulfillmentLocation });
-                    }
+                        var remainingLineCount =
+                            invoiceRec.getLineCount({
+                                sublistId: 'item'
+                            });
 
-                    if (invoiceRec.getLineCount({ sublistId: 'item' })) {
-                      var invoiceId = invoiceRec.save({
-                        enableSourcing: true,
-                        ignoreMandatoryFields: true
-                      });
+                        log.debug({
+                            title: 'Invoice Lines After Filtering',
+                            details: remainingLineCount
+                        });
 
-                      log.audit('Invoice Created', 'Invoice ' + invoiceId + ' created from Fulfillment ' + fulfillmentId);
+                        /*
+                         * Existing location logic remains unchanged.
+                         */
+                        if (fulfillmentLocation) {
+                            invoiceRec.setValue({
+                                fieldId: 'location',
+                                value: fulfillmentLocation
+                            });
+                        }
 
-                      if (invoiceId) {
-                        invoiceIdIs = invoiceId;
+                        if (remainingLineCount > 0) {
+                            var invoiceId =
+                                invoiceRec.save({
+                                    enableSourcing: true,
+                                    ignoreMandatoryFields: true
+                                });
 
-                      }
+                            log.audit({
+                                title: 'Invoice Created',
+                                details: {
+                                    invoiceId: invoiceId,
+                                    fulfillmentId:
+                                        fulfillmentId,
+                                    salesOrderId: createdFrom,
+                                    invoiceLines:
+                                        remainingLineCount
+                                }
+                            });
+
+                            if (invoiceId) {
+                                invoiceIdIs = invoiceId;
+                            }
+                        } else {
+                            log.debug({
+                                title: 'No Invoice Lines',
+                                details:
+                                    'No Invoice line 3PL Fulfillment Key ' +
+                                    'matched the Item Fulfillment.'
+                            });
+                        }
                     } else {
-                      log.debug('No Lines found for invoicing');
-                    }
-
-                } else {
-                    log.debug('No matching orderlines found for merchandise item');
-                }
-            } else {
-                log.debug('No merchandise item found for invoicing on IF');
-            }
-
-            if (hasDepositeItem) {
-                try {
-                    var loadSalesOrder = record.load({
-                      type: record.Type.SALES_ORDER,
-                      id: createdFrom,
-                      isDynamic: true
-                    })
-                    // Find line number for a specific item
-                    var lineIndex = loadSalesOrder.findSublistLineWithValue({
-                        sublistId: 'item',
-                        fieldId: 'item',
-                        value: TM_B_ITEM_ID
-                    });
-
-                    if (lineIndex !== -1) {
-                        loadSalesOrder.selectLine({ sublistId: 'item', line: lineIndex });
-
-                        loadSalesOrder.setCurrentSublistValue({
-                          sublistId: 'item',
-                          fieldId: 'isclosed',
-                          value: true
+                        log.debug({
+                            title: 'No Fulfillment Keys',
+                            details:
+                                'No received Item Fulfillment lines had a ' +
+                                '3PL Fulfillment Key.'
                         });
-                        loadSalesOrder.commitLine({ sublistId: 'item' });
-                        loadSalesOrder.save({
-                        enableSourcing: true,
-                        ignoreMandatoryFields: true
-                    });
                     }
-                } catch (error) {
-                    log.debug('error while saving order on reservation', error);
+                } else {
+                    log.debug({
+                        title: 'No Invoiceable Fulfillment Lines',
+                        details:
+                            'No received non-TM-B fulfillment line had a ' +
+                            '3PL Fulfillment Key.'
+                    });
                 }
-            }
 
-            if (invoiceIdIs) {
-              var response = https.get({
-                   url: 'https://1039693.extforms.netsuite.com/app/site/hosting/scriptlet.nl?script=3296&deploy=1&compid=1039693&ns-at=AAEJ7tMQ7FbIvC7C4CXmDC6HpNyrI0buOQ0wPxjhFUdFg5WJjWA&recid=' + invoiceIdIs,
-              });
-            }
+                /*
+                 * Existing TM-B Sales Order line closing logic
+                 * remains unchanged.
+                 */
+                if (hasDepositeItem) {
+                    try {
+                        var loadSalesOrder = record.load({
+                            type: record.Type.SALES_ORDER,
+                            id: createdFrom,
+                            isDynamic: true
+                        });
 
-        } catch (e) {
-            log.error('Error Creating Invoice', e.name + ': ' + e.message);
+                        var lineIndex =
+                            loadSalesOrder.findSublistLineWithValue({
+                                sublistId: 'item',
+                                fieldId: 'item',
+                                value: TM_B_ITEM_ID
+                            });
+
+                        if (lineIndex !== -1) {
+                            loadSalesOrder.selectLine({
+                                sublistId: 'item',
+                                line: lineIndex
+                            });
+
+                            loadSalesOrder.setCurrentSublistValue({
+                                sublistId: 'item',
+                                fieldId: 'isclosed',
+                                value: true
+                            });
+
+                            loadSalesOrder.commitLine({
+                                sublistId: 'item'
+                            });
+
+                            loadSalesOrder.save({
+                                enableSourcing: true,
+                                ignoreMandatoryFields: true
+                            });
+                        }
+                    } catch (depositError) {
+                        log.error({
+                            title:
+                                'Error While Closing TM-B Order Line',
+                            details: depositError
+                        });
+                    }
+                }
+
+                /*
+                 * Existing Suitelet call remains unchanged.
+                 */
+                if (invoiceIdIs) {
+                    https.get({
+                        url:
+                            'https://1039693.extforms.netsuite.com' +
+                            '/app/site/hosting/scriptlet.nl' +
+                            '?script=3296' +
+                            '&deploy=1' +
+                            '&compid=1039693' +
+                            '&ns-at=AAEJ7tMQ7FbIvC7C4CXmDC6HpNyrI0buOQ0wPxjhFUdFg5WJjWA' +
+                            '&recid=' +
+                            invoiceIdIs
+                    });
+                }
+            } catch (e) {
+                log.error({
+                    title: 'Error Creating Invoice',
+                    details: {
+                        name: e.name,
+                        message: e.message,
+                        stack: e.stack
+                    }
+                });
+            }
         }
-    }
 
-    return {
-        afterSubmit: afterSubmit
-    };
-});
+        return {
+            afterSubmit: afterSubmit
+        };
+    }
+);
