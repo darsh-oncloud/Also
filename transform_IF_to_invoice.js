@@ -19,12 +19,28 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
 
             var fulfillment = context.newRecord;
             var fulfillmentId = fulfillment.id;
-            var salesOrderId = fulfillment.getValue('createdfrom');
-            var orderId = fulfillment.getValue(
-                'custbody_celigo_etail_order_id'
-            );
 
-            if (!salesOrderId || !orderId) {
+            var salesOrderId = fulfillment.getValue({
+                fieldId: 'createdfrom'
+            });
+
+            var orderId = fulfillment.getValue({
+                fieldId: 'custbody_celigo_etail_order_id'
+            });
+
+            if (!salesOrderId) {
+                log.audit(
+                    'Invoice Not Created',
+                    'Item Fulfillment does not have a source Sales Order.'
+                );
+                return;
+            }
+
+            if (!orderId) {
+                log.audit(
+                    'Invoice Not Created',
+                    'Celigo eTail Order ID is empty.'
+                );
                 return;
             }
 
@@ -36,7 +52,11 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
             var hasDepositItem = false;
             var fulfillmentLocation = '';
 
+            /*
+             * Collect fulfilled lines by 3PL Fulfillment Key.
+             */
             for (var i = 0; i < lineCount; i++) {
+
                 var itemId = Number(
                     fulfillment.getSublistValue({
                         sublistId: 'item',
@@ -51,7 +71,7 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
                     line: i
                 });
 
-                var key = fulfillment.getSublistValue({
+                var fulfillmentKey = fulfillment.getSublistValue({
                     sublistId: 'item',
                     fieldId: KEY_FIELD,
                     line: i
@@ -76,8 +96,8 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
                     continue;
                 }
 
-                if (itemReceive && key) {
-                    fulfilledLines[String(key)] = quantity;
+                if (itemReceive && fulfillmentKey) {
+                    fulfilledLines[String(fulfillmentKey)] = quantity;
 
                     if (!fulfillmentLocation && location) {
                         fulfillmentLocation = location;
@@ -88,12 +108,42 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
             var invoiceId = null;
 
             if (Object.keys(fulfilledLines).length > 0) {
-                var invoice = record.transform({
-                    fromType: record.Type.SALES_ORDER,
-                    fromId: salesOrderId,
-                    toType: record.Type.INVOICE,
-                    isDynamic: true
-                });
+
+                var invoice;
+
+                /*
+                 * Transform Sales Order to Invoice.
+                 *
+                 * When the order has nothing left to bill,
+                 * log a simple message instead of an error.
+                 */
+                try {
+                    invoice = record.transform({
+                        fromType: record.Type.SALES_ORDER,
+                        fromId: salesOrderId,
+                        toType: record.Type.INVOICE,
+                        isDynamic: true
+                    });
+
+                } catch (transformError) {
+
+                    if (
+                        transformError.name === 'INVALID_INITIALIZE_REF' ||
+                        transformError.message.indexOf(
+                            'invalid reference'
+                        ) !== -1
+                    ) {
+                        log.audit(
+                            'Invoice Not Created',
+                            'Sales Order ' + salesOrderId +
+                            ' has nothing left to bill.'
+                        );
+
+                        return;
+                    }
+
+                    throw transformError;
+                }
 
                 invoice.setValue({
                     fieldId: 'account',
@@ -109,7 +159,12 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
                     sublistId: 'item'
                 });
 
+                /*
+                 * Keep only Invoice lines whose 3PL Fulfillment Key
+                 * exists on the Item Fulfillment.
+                 */
                 for (var j = invoiceLineCount - 1; j >= 0; j--) {
+
                     var invoiceKey = invoice.getSublistValue({
                         sublistId: 'item',
                         fieldId: KEY_FIELD,
@@ -150,73 +205,113 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
                     });
                 }
 
-                if (
-                    invoice.getLineCount({
-                        sublistId: 'item'
-                    }) > 0
-                ) {
+                var remainingLines = invoice.getLineCount({
+                    sublistId: 'item'
+                });
+
+                if (remainingLines > 0) {
                     invoiceId = invoice.save({
                         enableSourcing: true,
                         ignoreMandatoryFields: true
                     });
 
-                    log.audit('Invoice Created', {
-                        fulfillmentId: fulfillmentId,
-                        invoiceId: invoiceId
-                    });
+                    log.audit(
+                        'Invoice Created',
+                        'Invoice ' + invoiceId +
+                        ' created from Item Fulfillment ' +
+                        fulfillmentId
+                    );
+
+                } else {
+                    log.audit(
+                        'Invoice Not Created',
+                        'No Invoice lines matched the Item Fulfillment ' +
+                        '3PL Fulfillment Keys.'
+                    );
                 }
+
+            } else {
+                log.audit(
+                    'Invoice Not Created',
+                    'No fulfilled lines with a 3PL Fulfillment Key were found.'
+                );
             }
 
+            /*
+             * Existing TM-B line-closing logic.
+             */
             if (hasDepositItem) {
-                var salesOrder = record.load({
-                    type: record.Type.SALES_ORDER,
-                    id: salesOrderId,
-                    isDynamic: true
-                });
-
-                var depositLine =
-                    salesOrder.findSublistLineWithValue({
-                        sublistId: 'item',
-                        fieldId: 'item',
-                        value: TM_B_ITEM_ID
+                try {
+                    var salesOrder = record.load({
+                        type: record.Type.SALES_ORDER,
+                        id: salesOrderId,
+                        isDynamic: true
                     });
 
-                if (depositLine !== -1) {
-                    salesOrder.selectLine({
-                        sublistId: 'item',
-                        line: depositLine
-                    });
+                    var depositLine =
+                        salesOrder.findSublistLineWithValue({
+                            sublistId: 'item',
+                            fieldId: 'item',
+                            value: TM_B_ITEM_ID
+                        });
 
-                    salesOrder.setCurrentSublistValue({
-                        sublistId: 'item',
-                        fieldId: 'isclosed',
-                        value: true
-                    });
+                    if (depositLine !== -1) {
+                        salesOrder.selectLine({
+                            sublistId: 'item',
+                            line: depositLine
+                        });
 
-                    salesOrder.commitLine({
-                        sublistId: 'item'
-                    });
+                        salesOrder.setCurrentSublistValue({
+                            sublistId: 'item',
+                            fieldId: 'isclosed',
+                            value: true
+                        });
 
-                    salesOrder.save({
-                        enableSourcing: true,
-                        ignoreMandatoryFields: true
-                    });
+                        salesOrder.commitLine({
+                            sublistId: 'item'
+                        });
+
+                        salesOrder.save({
+                            enableSourcing: true,
+                            ignoreMandatoryFields: true
+                        });
+
+                        log.audit(
+                            'TM-B Line Closed',
+                            'TM-B line closed on Sales Order ' +
+                            salesOrderId
+                        );
+                    }
+
+                } catch (depositError) {
+                    log.error(
+                        'TM-B Line Closing Error',
+                        depositError
+                    );
                 }
             }
 
+            /*
+             * Existing Suitelet call.
+             */
             if (invoiceId) {
                 https.get({
                     url:
                         'https://1039693.extforms.netsuite.com' +
                         '/app/site/hosting/scriptlet.nl' +
-                        '?script=3296&deploy=1&compid=1039693' +
+                        '?script=3296' +
+                        '&deploy=1' +
+                        '&compid=1039693' +
                         '&ns-at=AAEJ7tMQ7FbIvC7C4CXmDC6HpNyrI0buOQ0wPxjhFUdFg5WJjWA' +
                         '&recid=' + invoiceId
                 });
             }
 
         } catch (e) {
-            log.error('Invoice Creation Error', e);
+            log.error(
+                'Invoice Creation Error',
+                e.name + ': ' + e.message
+            );
         }
     }
 
