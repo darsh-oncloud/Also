@@ -85,16 +85,37 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
                 }
             }
 
-            var invoiceId = null;
+            // var invoiceId = null;
 
-            if (Object.keys(fulfilledLines).length > 0) {
-                var invoice = record.transform({
-                    fromType: record.Type.SALES_ORDER,
-                    fromId: salesOrderId,
-                    toType: record.Type.INVOICE,
-                    isDynamic: true
-                });
+            // if (Object.keys(fulfilledLines).length > 0) {
+            //     var invoice = record.transform({
+            //         fromType: record.Type.SALES_ORDER,
+            //         fromId: salesOrderId,
+            //         toType: record.Type.INVOICE,
+            //         isDynamic: true
+            //     });
 
+
+          var invoice;
+
+try {
+    invoice = record.transform({
+        fromType: record.Type.SALES_ORDER,
+        fromId: salesOrderId,
+        toType: record.Type.INVOICE,
+        isDynamic: true
+    });
+} catch (e) {
+    if (e.name === 'INVALID_INITIALIZE_REF') {
+        log.audit(
+            'Invoice Not Created',
+            'Sales Order ' + salesOrderId + ' has nothing left to bill.'
+        );
+        return;
+    }
+
+    throw e;
+}
                 invoice.setValue({
                     fieldId: 'account',
                     value: AR_ACCOUNT
