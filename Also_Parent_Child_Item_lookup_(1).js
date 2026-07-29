@@ -20,7 +20,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     var ALLOCATION_STRATEGY_FIELD = 'orderallocationstrategy';
     var ALSO_CATEGORY_ALLOCATE_VALUE = '8';
     var MERCH_ALLOCATION_STRATEGY_VALUE = '-2';
-    var DO_NOT_ALLOCATE_VALUE = '';
+    var DO_NOT_ALLOCATE_VALUE = '-1';
 
     // list values
     var TYPE_PARENT = '1';
