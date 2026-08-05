@@ -248,8 +248,8 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
                     }
                     parentGroups[itemId].parentLines.push(lineObj);
 
-               // } else if (parentComp === PC_COMPONENT) {
-               } else if (parentComp === PC_COMPONENT || parentComp === PC_FILLER) {   
+                } else if (parentComp === PC_COMPONENT) {
+               //} else if (parentComp === PC_COMPONENT || parentComp === PC_FILLER) {   
                     if (!parentItemId) {
                         addonLines.push(lineObj);
                     } else {
