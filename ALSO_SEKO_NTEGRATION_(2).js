@@ -16,7 +16,7 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
     // CONFIG - change these two only
     // ----------------------------------------------------------------------
     const INVOICE_SEARCH_ID = 'customsearch_transaction_search_invoice_'; // your saved invoice search
-    const DRY_RUN = true;                                  // <<< set to false to actually delete
+    const DRY_RUN = false;                                  // <<< set to false to actually delete
     // ----------------------------------------------------------------------
 
     /**
