@@ -12,7 +12,7 @@ define(['N/https', 'N/log'], (https, log) => {
     const API_VERSION   = '2026-07';
 
     // Change this if you create the field with a different ID
-    const SHOPIFY_RETURN_FIELD = 'custbody_shopify_return_id';
+    const SHOPIFY_RETURN_FIELD = 'custbody_celigo_etail_returns_id';
 
     // Existing Celigo field - only used for logging
     const SHOPIFY_ORDER_FIELD = 'custbody_celigo_etail_order_id';
