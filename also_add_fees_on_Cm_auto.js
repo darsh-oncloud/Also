@@ -2,7 +2,7 @@
  * @NApiVersion 2.1
  * @NScriptType UserEventScript
  */
-define(['N/search'], (search) => {
+define(['N/search', 'N/log'], (search, log) => {
 
     const beforeSubmit = (context) => {
 
@@ -10,22 +10,19 @@ define(['N/search'], (search) => {
 
         const cm = context.newRecord;
         const rmaId = cm.getValue({ fieldId: 'createdfrom' });
-
         if (!rmaId) return;
 
-        const feeItems = ['6360', '6361'];
+        log.audit('CM Fee Start', { rmaId });
 
-        const existingItems = [];
+        const fees = ['6360', '6361'];
+        const existing = new Set();
 
-        for (let i = 0; i < cm.getLineCount({ sublistId: 'item' }); i++) {
-            existingItems.push(String(
-                cm.getSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'item',
-                    line: i
-                })
-            ));
-        }
+        for (let i = 0; i < cm.getLineCount({ sublistId: 'item' }); i++)
+            existing.add(String(cm.getSublistValue({
+                sublistId: 'item',
+                fieldId: 'item',
+                line: i
+            })));
 
         search.create({
             type: 'returnauthorization',
@@ -34,56 +31,47 @@ define(['N/search'], (search) => {
                 'AND',
                 ['mainline', 'is', 'F'],
                 'AND',
-                ['item', 'anyof', feeItems]
+                ['item', 'anyof', fees]
             ],
             columns: ['item', 'amount']
         }).run().each(result => {
 
-            const itemId = String(result.getValue({ name: 'item' }));
-            const amount = Number(result.getValue({ name: 'amount' })) || 0;
+            const item = String(result.getValue('item'));
+            const amount = -Math.abs(Number(result.getValue('amount')) || 0);
 
-            if (!amount || existingItems.indexOf(itemId) !== -1) {
-                return true;
-            }
+            if (!amount || existing.has(item)) return true;
 
             const line = cm.getLineCount({ sublistId: 'item' });
 
-            cm.insertLine({
-                sublistId: 'item',
-                line: line
-            });
+            cm.insertLine({ sublistId: 'item', line });
 
-            cm.setSublistValue({
-                sublistId: 'item',
-                fieldId: 'item',
-                line: line,
-                value: Number(itemId)
-            });
+            [
+                ['item', Number(item)],
+                ['quantity', 1],
+                ['price', -1],
+                ['rate', amount]
+            ].forEach(([fieldId, value]) =>
+                cm.setSublistValue({
+                    sublistId: 'item',
+                    fieldId,
+                    line,
+                    value
+                })
+            );
 
-            cm.setSublistValue({
-                sublistId: 'item',
-                fieldId: 'quantity',
-                line: line,
-                value: 1
-            });
+            existing.add(item);
 
-            cm.setSublistValue({
-                sublistId: 'item',
-                fieldId: 'price',
-                line: line,
-                value: -1
+            log.audit('CM Fee Added', {
+                item,
+                amount
             });
-
-            cm.setSublistValue({
-                sublistId: 'item',
-                fieldId: 'rate',
-                line: line,
-                value: amount
-            });
-
-            existingItems.push(itemId);
 
             return true;
+        });
+
+        log.audit('CM Fee Complete', {
+            rmaId,
+            lineCount: cm.getLineCount({ sublistId: 'item' })
         });
     };
 
