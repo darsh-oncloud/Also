@@ -34,16 +34,14 @@ define(['N/search', 'N/log'], (search, log) => {
 
             const line = cm.getLineCount({ sublistId: 'item' });
 
-            cm.insertLine({
-                sublistId: 'item',
-                line
-            });
+            cm.insertLine({ sublistId: 'item', line });
 
             [
                 ['item', item],
                 ['quantity', 1],
                 ['price', -1],
                 ['rate', amount],
+                ['orderdoc', Number(rmaId)],
                 ['orderline', orderLine]
             ].forEach(([fieldId, value]) =>
                 cm.setSublistValue({
@@ -57,7 +55,8 @@ define(['N/search', 'N/log'], (search, log) => {
             log.audit('CM Fee Linked', {
                 item,
                 amount,
-                orderLine
+                orderdoc: rmaId,
+                orderline: orderLine
             });
 
             return true;
