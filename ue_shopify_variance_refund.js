@@ -8,7 +8,8 @@
  */
 define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
 
-    const CASHBACK_MEMO = 'variances';
+    const CASHBACK_MEMO  = 'variances';
+    const REFUND_ACCOUNT = 122;          // account the live script would create the refund against
 
     const afterSubmit = (context) => {
 
@@ -23,6 +24,7 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
             depositPaymentLine : null,
             cashBackBefore : null,
             cashBackAfter  : null,
+            plannedActions : [],
             problems       : []
         };
 
@@ -250,6 +252,60 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
                 plan.cashBackAfter  = Math.round((plan.cashBackBefore - refundAmount) * 100) / 100;
                 if (plan.cashBackAfter < -0.001) plan.problems.push('cash back line is smaller than the refund amount - the live script would fail here');
             }
+
+            /* ---------- 9a-9d. every write the live script would perform ---------- */
+            const refundLabel = (plan.refundAction === 'REUSE_EXISTING')
+                ? 'existing refund ' + matchedRefundId
+                : 'the newly created refund';
+
+            if (plan.refundAction === 'REUSE_EXISTING') {
+                log.audit('9a. WOULD NOT CREATE A REFUND - reusing one', {
+                    refundId: matchedRefundId,
+                    reason: 'already exists, applies customer deposit ' + customerDepositId + ', not yet on any bank deposit'
+                });
+                plan.plannedActions.push('REUSE customer refund ' + matchedRefundId + ' (no new record created)');
+            } else {
+                log.audit('9a. WOULD CREATE A CUSTOMER REFUND', {
+                    method: 'record.transform customerdeposit -> customerrefund',
+                    fromCustomerDeposit: customerDepositId + ' (' + custDeposits[0].tranid + ')',
+                    amount: refundAmount,
+                    trandate: depositInfo.trandate,
+                    account: REFUND_ACCOUNT,
+                    customer: soResult[0].getText('entity'),
+                    appliesDepositLine: true
+                });
+                plan.plannedActions.push('CREATE customer refund of ' + refundAmount + ' from customer deposit ' + customerDepositId);
+            }
+
+            log.audit('9b. WOULD TICK THE REFUND ON THE BANK DEPOSIT', {
+                bankDeposit: bankDepositId + ' (' + depositInfo.tranid + ')',
+                refund: refundLabel,
+                paymentSublistLine: (matchedLine >= 0) ? matchedLine : 'not known yet - refund does not exist until the live run creates it',
+                depositCheckbox: 'false -> true',
+                effectOnDepositTotal: 'minus ' + refundAmount
+            });
+            plan.plannedActions.push('TICK ' + refundLabel + ' on bank deposit ' + depositInfo.tranid);
+
+            if (varianceLine >= 0) {
+                log.audit('9c. WOULD REDUCE THE CASH BACK VARIANCE LINE', {
+                    bankDeposit: depositInfo.tranid,
+                    cashBackLine: varianceLine,
+                    memo: cashBackRows[varianceLine].memo,
+                    amountBefore: plan.cashBackBefore,
+                    amountAfter: plan.cashBackAfter,
+                    lineWouldBeRemoved: (Math.abs(plan.cashBackAfter) < 0.001),
+                    feesLineTouched: false,
+                    depositTotalAfterBothChanges: 'unchanged (' + depositInfo.total + ')'
+                });
+                plan.plannedActions.push('REDUCE cash back "' + cashBackRows[varianceLine].memo + '" from ' + plan.cashBackBefore + ' to ' + plan.cashBackAfter);
+            }
+
+            log.audit('9d. WOULD UPDATE THIS VARIANCE RECORD', {
+                varianceRecord: rec.id,
+                custrecord_related_netsuite_transaction: refundLabel,
+                isinactive: 'false -> true'
+            });
+            plan.plannedActions.push('STAMP ' + refundLabel + ' on variance record ' + rec.id + ' and set it inactive');
 
             plan.wouldProceed = true;
 
