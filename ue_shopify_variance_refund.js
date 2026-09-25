@@ -2,115 +2,105 @@
  * @NApiVersion 2.1
  * @NScriptType UserEventScript
  *
- * LIVE - creates/edits customer refunds, updates the bank deposit, closes the variance record.
+ * DRY RUN ONLY - reads and logs, never creates or updates anything.
  * Deploy on: Shopify Payout Variance Transaction custom record.
+ * Trigger: open a variance record, Edit then Save (no changes needed), read the Execution Log.
  */
 define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
 
     const CASHBACK_MEMO  = 'variances';
-    const REFUND_ACCOUNT = 122;
-    const SO_LINK_FIELD  = 'custbody_pcs_netsuite_sales_order';
-    const MAX_RETRY      = 3;
-
-    /* apply a customer deposit line on a refund record (used by create and edit paths) */
-    const applyDeposit = (refund, cdId, amount) => {
-        const cnt = refund.getLineCount({ sublistId: 'deposit' });
-        let applied = false;
-        for (let i = 0; i < cnt; i++) {
-            const mine = String(refund.getSublistValue({ sublistId: 'deposit', fieldId: 'doc', line: i })) === String(cdId);
-            refund.setSublistValue({ sublistId: 'deposit', fieldId: 'apply', line: i, value: mine });
-            if (mine) {
-                refund.setSublistValue({ sublistId: 'deposit', fieldId: 'amount', line: i, value: amount });
-                applied = true;
-            }
-        }
-        return applied;
-    };
-
-    /* tick the refund on the bank deposit and shrink the variance cash back line, with retry */
-    const updateBankDeposit = (depositId, refundId, amount) => {
-        for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-            try {
-                const dep = record.load({
-                    type: record.Type.DEPOSIT, id: depositId, isDynamic: false,
-                    defaultValues: { disablepaymentfilters: true }
-                });
-
-                let line = -1;
-                const pCount = dep.getLineCount({ sublistId: 'payment' });
-                for (let i = 0; i < pCount; i++) {
-                    if (String(dep.getSublistValue({ sublistId: 'payment', fieldId: 'id', line: i })) === String(refundId)) { line = i; break; }
-                }
-                if (line === -1) throw Error('refund ' + refundId + ' is not available on deposit ' + depositId);
-
-                if (dep.getSublistValue({ sublistId: 'payment', fieldId: 'deposit', line: line })) {
-                    log.audit('Deposit already ticked', { depositId: depositId, refundId: refundId });
-                    return { skipped: true };
-                }
-
-                let cbLine = -1;
-                const cCount = dep.getLineCount({ sublistId: 'cashback' });
-                for (let i = 0; i < cCount; i++) {
-                    const memo = dep.getSublistValue({ sublistId: 'cashback', fieldId: 'memo', line: i });
-                    if (String(memo || '').trim().toLowerCase() === CASHBACK_MEMO) { cbLine = i; break; }
-                }
-                if (cbLine === -1) throw Error('no cash back line with memo "' + CASHBACK_MEMO + '" on deposit ' + depositId);
-
-                const before = parseFloat(dep.getSublistValue({ sublistId: 'cashback', fieldId: 'amount', line: cbLine })) || 0;
-                const after  = Math.round((before - amount) * 100) / 100;
-                if (after < -0.001) throw Error('cash back ' + before + ' is less than refund ' + amount);
-
-                dep.setSublistValue({ sublistId: 'payment', fieldId: 'deposit', line: line, value: true });
-                if (Math.abs(after) < 0.001) dep.removeLine({ sublistId: 'cashback', line: cbLine });
-                else dep.setSublistValue({ sublistId: 'cashback', fieldId: 'amount', line: cbLine, value: after });
-
-                dep.save({ enableSourcing: true, ignoreMandatoryFields: true });
-                return { line: line, cashBackBefore: before, cashBackAfter: after };
-
-            } catch (e) {
-                if (e.name === 'RCRD_HAS_BEEN_CHANGED' && attempt < MAX_RETRY) {
-                    log.audit('Deposit changed by another process, retrying', 'attempt ' + attempt);
-                    continue;
-                }
-                throw e;
-            }
-        }
-    };
+    const REFUND_ACCOUNT = 122;          // account the live script would create the refund against
 
     const afterSubmit = (context) => {
-        if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) return;
 
-        const rec = context.newRecord;
+        const plan = {
+            varianceRecord : null,
+            wouldProceed   : false,
+            stoppedAt      : null,
+            salesOrder     : null,
+            customerDeposit: null,
+            refundAction   : null,              // REUSE_EXISTING | CREATE_NEW | NOTHING_TO_DO
+            refundId       : null,
+            depositPaymentLine : null,
+            cashBackBefore : null,
+            cashBackAfter  : null,
+            plannedActions : [],
+            problems       : []
+        };
 
         try {
-            /* ---------- gates ---------- */
-            if (rec.getValue('isinactive')) return;
-            if (rec.getValue('custrecord_related_netsuite_transaction')) return;
+            if (context.type === context.UserEventType.DELETE) return;
 
+            const rec = context.newRecord;
+            plan.varianceRecord = rec.id;
+
+            /* ---------- 1. gates ---------- */
             const varianceType = rec.getText({ fieldId: 'custrecord_celigo_shpf_trans_var_type' }) || rec.getValue('custrecord_celigo_shpf_trans_var_type');
             const payoutType   = rec.getText({ fieldId: 'custrecord_celigo_shpf_payout_tran_type' }) || rec.getValue('custrecord_celigo_shpf_payout_tran_type');
-            if (String(varianceType) !== 'Missing Transaction') return;
-            if (String(payoutType).toLowerCase() !== 'refund') return;
+            const alreadyDone  = rec.getValue('custrecord_related_netsuite_transaction');
+            const inactive     = rec.getValue('isinactive');
 
+            log.audit('1. Gate values', {
+                contextType: context.type,
+                varianceType: varianceType,
+                payoutType: payoutType,
+                isinactive: inactive,
+                relatedTransaction: alreadyDone
+            });
+
+            if (inactive)    { plan.stoppedAt = 'record is inactive'; return; }
+            if (alreadyDone) { plan.stoppedAt = 'related transaction already set: ' + alreadyDone; return; }
+            if (String(varianceType) !== 'Missing Transaction') { plan.stoppedAt = 'variance type is not Missing Transaction'; return; }
+            if (String(payoutType).toLowerCase() !== 'refund')  { plan.stoppedAt = 'payout type is not refund'; return; }
+
+            /* ---------- 2. source fields ---------- */
             const sourceOrderId = rec.getValue('custrecord_celigo_shpf_tran_src_ordr_id');
             const bankDepositId = rec.getValue('custrecord_celigo_shpf_trans_deposit_id');
             const refundAmount  = Math.abs(parseFloat(rec.getValue('custrecord_celigo_shpf_trans_var_amnt')) || 0);
-            if (!sourceOrderId || !bankDepositId || !refundAmount) throw Error('missing source order id, deposit id or variance amount');
 
-            log.audit('START', { varianceRecord: rec.id, sourceOrderId, bankDepositId, refundAmount });
+            log.audit('2. Source fields', { sourceOrderId, bankDepositId, refundAmount });
 
-            /* ---------- sales order ---------- */
-            const so = search.create({
+            if (!sourceOrderId || !bankDepositId || !refundAmount) {
+                plan.stoppedAt = 'missing source order id, deposit id or variance amount';
+                return;
+            }
+
+            /* ---------- 3. sales order ---------- */
+            const soResult = search.create({
                 type: 'salesorder',
-                filters: [['mainline', 'is', 'T'], 'AND', ['custbody_celigo_etail_order_id', 'is', String(sourceOrderId)]],
-                columns: ['internalid', 'tranid', 'entity']
-            }).run().getRange({ start: 0, end: 2 });
+                filters: [
+                    ['mainline', 'is', 'T'], 'AND',
+                    ['custbody_celigo_etail_order_id', 'is', String(sourceOrderId)]
+                ],
+                columns: ['internalid', 'tranid', 'entity', 'status']
+            }).run().getRange({ start: 0, end: 5 });
 
-            if (!so.length) throw Error('sales order not found for shopify order ' + sourceOrderId);
-            if (so.length > 1) throw Error('more than one sales order matches shopify order ' + sourceOrderId);
-            const soId = so[0].id;
+            log.audit('3. Sales order search', {
+                matches: soResult.length,
+                rows: soResult.map(r => ({ id: r.id, tranid: r.getValue('tranid'), customer: r.getText('entity'), status: r.getText('status') }))
+            });
 
-            /* ---------- customer deposit ---------- */
+            if (!soResult.length) { plan.stoppedAt = 'sales order not found for shopify order ' + sourceOrderId; return; }
+            if (soResult.length > 1) plan.problems.push('more than one sales order matched this shopify order id');
+
+            const soId = soResult[0].id;
+            plan.salesOrder = soId + ' (' + soResult[0].getValue('tranid') + ')';
+
+            /* ---------- 4. bank deposit header ---------- */
+            const depositInfo = search.lookupFields({
+                type: search.Type.DEPOSIT,
+                id: bankDepositId,
+                columns: ['trandate', 'total', 'tranid']
+            });
+
+            log.audit('4. Bank deposit', {
+                depositId: bankDepositId,
+                tranid: depositInfo.tranid,
+                trandate: depositInfo.trandate,
+                total: depositInfo.total
+            });
+
+            /* ---------- 5. customer deposit via applyingtransaction join ---------- */
             const cdRows = search.create({
                 type: 'salesorder',
                 settings: [{ name: 'consolidationtype', value: 'ACCTTYPE' }],
@@ -120,102 +110,210 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
                     ['applyingtransaction.type', 'anyof', 'CustDep'], 'AND',
                     ['applyingtransaction.status', 'anyof', 'CustDep:A', 'CustDep:B']
                 ],
-                columns: [search.createColumn({ name: 'internalid', join: 'applyingTransaction' })]
+                columns: [
+                    search.createColumn({ name: 'internalid', join: 'applyingTransaction' }),
+                    search.createColumn({ name: 'tranid',     join: 'applyingTransaction' }),
+                    search.createColumn({ name: 'amount',     join: 'applyingTransaction' }),
+                    search.createColumn({ name: 'status',     join: 'applyingTransaction' })
+                ]
             }).run().getRange({ start: 0, end: 20 });
 
-            const cdIds = [];
+            const custDeposits = [];
             cdRows.forEach(r => {
-                const id = String(r.getValue({ name: 'internalid', join: 'applyingTransaction' }) || '');
-                if (id && cdIds.indexOf(id) < 0) cdIds.push(id);
-            });
-
-            if (!cdIds.length) throw Error('no customer deposit (status A or B) on sales order ' + soId);
-            if (cdIds.length > 1) throw Error('more than one customer deposit on sales order ' + soId + ' - needs manual handling');
-            const customerDepositId = cdIds[0];
-
-            const depositInfo = search.lookupFields({
-                type: search.Type.DEPOSIT, id: bankDepositId, columns: ['trandate', 'tranid']
-            });
-
-            /* ---------- find and classify every candidate refund ---------- */
-            const candidates = [];
-            const addCandidates = (filters) => {
-                search.create({
-                    type: 'customerrefund', filters: filters, columns: ['internalid', 'tranid', 'total']
-                }).run().getRange({ start: 0, end: 20 }).forEach(r => {
-                    if (candidates.filter(c => c.id === String(r.id))[0]) return;
-                    candidates.push({ id: String(r.id), tranid: r.getValue('tranid'), total: Math.abs(parseFloat(r.getValue('total')) || 0) });
-                });
-            };
-            addCandidates([['mainline', 'is', 'T'], 'AND', ['createdfrom', 'anyof', soId]]);
-            try { addCandidates([['mainline', 'is', 'T'], 'AND', [SO_LINK_FIELD, 'anyof', soId]]); }
-            catch (e) { log.audit('SO link field search unavailable', e.message); }
-
-            let reuse = null, needsApply = null, blocked = null;
-
-            candidates.forEach(c => {
-                if (Math.abs(c.total - refundAmount) >= 0.01) return;      // wrong amount, ignore
-
-                const rr = record.load({ type: record.Type.CUSTOMER_REFUND, id: c.id });
-                let appliesOurs = false, appliesOther = false;
-                const dc = rr.getLineCount({ sublistId: 'deposit' });
-                for (let i = 0; i < dc; i++) {
-                    if (!rr.getSublistValue({ sublistId: 'deposit', fieldId: 'apply', line: i })) continue;
-                    const doc = String(rr.getSublistValue({ sublistId: 'deposit', fieldId: 'doc', line: i }));
-                    if (doc === customerDepositId) appliesOurs = true; else appliesOther = true;
+                const id = r.getValue({ name: 'internalid', join: 'applyingTransaction' });
+                if (id && !custDeposits.filter(d => d.id === String(id))[0]) {
+                    custDeposits.push({
+                        id: String(id),
+                        tranid: r.getValue({ name: 'tranid', join: 'applyingTransaction' }),
+                        amount: r.getValue({ name: 'amount', join: 'applyingTransaction' }),
+                        status: r.getText({ name: 'status', join: 'applyingTransaction' })
+                    });
                 }
-
-                if (appliesOther && !appliesOurs) { blocked = blocked || (c.tranid + ' applies a different customer deposit'); return; }
-                if (appliesOurs)  { reuse      = reuse      || c; return; }
-                needsApply = needsApply || c;                              // applies nothing - we can use it
             });
 
-            if (!reuse && !needsApply && blocked) throw Error('BLOCKED: ' + blocked + ' - not creating a duplicate, needs manual review');
+            log.audit('5. Customer deposits on this SO', { found: custDeposits.length, rows: custDeposits });
 
-            /* ---------- get a usable refund ---------- */
-            let refundId, action;
+            if (!custDeposits.length) { plan.stoppedAt = 'no customer deposit (status A or B) found on sales order ' + soId; return; }
+            if (custDeposits.length > 1) plan.problems.push('more than one customer deposit on this order - dry run picked the first');
 
-            if (reuse) {
-                refundId = reuse.id;
-                action = 'REUSED ' + reuse.tranid;
+            const customerDepositId = custDeposits[0].id;
+            plan.customerDeposit = customerDepositId + ' (' + custDeposits[0].tranid + ')';
 
-            } else if (needsApply) {
-                const rr = record.load({ type: record.Type.CUSTOMER_REFUND, id: needsApply.id });
-                if (!applyDeposit(rr, customerDepositId, refundAmount)) throw Error('customer deposit ' + customerDepositId + ' not available on refund ' + needsApply.tranid);
-                if (!rr.getValue(SO_LINK_FIELD)) rr.setValue({ fieldId: SO_LINK_FIELD, value: soId });
-                refundId = rr.save({ enableSourcing: true, ignoreMandatoryFields: true });
-                action = 'APPLIED DEPOSIT TO ' + needsApply.tranid;
+            /* ---------- 6. refunds from this SO with THIS customer deposit applied ---------- */
+            const readRefunds = (label, filters) => {
+                try {
+                    return search.create({
+                        type: 'customerrefund',
+                        filters: filters,
+                        columns: ['internalid', 'tranid', 'trandate', 'total', 'account']
+                    }).run().getRange({ start: 0, end: 20 })
+                        .map(r => ({
+                            id: String(r.id),
+                            tranid: r.getValue('tranid'),
+                            date: r.getValue('trandate'),
+                            total: r.getValue('total'),
+                            account: r.getText('account')
+                        }));
+                } catch (e) {
+                    plan.problems.push('refund search (' + label + ') failed: ' + e.message);
+                    return [];
+                }
+            };
 
-            } else {
-                const rr = record.transform({
-                    fromType: record.Type.CUSTOMER_DEPOSIT, fromId: customerDepositId,
-                    toType: record.Type.CUSTOMER_REFUND, isDynamic: false
-                });
-                rr.setValue({ fieldId: 'account', value: REFUND_ACCOUNT });
-                rr.setValue({ fieldId: 'trandate', value: depositInfo.trandate });
-                rr.setValue({ fieldId: SO_LINK_FIELD, value: soId });
-                if (!applyDeposit(rr, customerDepositId, refundAmount)) throw Error('customer deposit ' + customerDepositId + ' not available on the new refund');
-                refundId = rr.save({ enableSourcing: true, ignoreMandatoryFields: true });
-                action = 'CREATED new refund';
+            // strict: created from this SO AND this customer deposit applied
+            const matchedRefunds = readRefunds('strict', [
+                ['mainline', 'is', 'T'], 'AND',
+                ['createdfrom', 'anyof', soId], 'AND',
+                ['appliedtotransaction', 'anyof', customerDepositId]
+            ]);
+
+            // diagnostic only: everything created from this SO, to see near misses
+            const allFromSo = readRefunds('createdfrom only', [
+                ['mainline', 'is', 'T'], 'AND',
+                ['createdfrom', 'anyof', soId]
+            ]);
+
+            log.audit('6. Customer refunds for this order', {
+                withThisCustomerDepositApplied: matchedRefunds.length,
+                matched: matchedRefunds,
+                allCreatedFromThisSo: allFromSo
+            });
+
+            if (!matchedRefunds.length && allFromSo.length) {
+                plan.problems.push('refunds exist on this SO but none apply customer deposit ' + customerDepositId + ' - review before going live');
             }
 
-            log.audit('Refund ready', { action: action, refundId: refundId, amount: refundAmount });
-
-            /* ---------- bank deposit ---------- */
-            const depResult = updateBankDeposit(bankDepositId, refundId, refundAmount);
-            log.audit('Bank deposit updated', { deposit: depositInfo.tranid, refundId: refundId, result: depResult });
-
-            /* ---------- close the variance record ---------- */
-            record.submitFields({
-                type: rec.type, id: rec.id,
-                values: { custrecord_related_netsuite_transaction: refundId, isinactive: true },
-                options: { ignoreMandatoryFields: true }
+            /* ---------- 7. bank deposit payment sublist ---------- */
+            const deposit = record.load({
+                type: record.Type.DEPOSIT,
+                id: bankDepositId,
+                isDynamic: false,
+                defaultValues: { disablepaymentfilters: true }
             });
 
-            log.audit('DONE', { varianceRecord: rec.id, action: action, refundId: refundId });
+            const paymentCount = deposit.getLineCount({ sublistId: 'payment' });
+            const candidateIds = matchedRefunds.map(r => r.id);
+            const linesForThisOrder = [];
+            let matchedLine = -1, matchedRefundId = null, tickedAlready = false;
+
+            for (let i = 0; i < paymentCount; i++) {
+                const id     = String(deposit.getSublistValue({ sublistId: 'payment', fieldId: 'id', line: i }));
+                if (candidateIds.indexOf(id) < 0) continue;
+
+                const amt    = Math.abs(parseFloat(deposit.getSublistValue({ sublistId: 'payment', fieldId: 'amount', line: i })) || 0);
+                const ticked = deposit.getSublistValue({ sublistId: 'payment', fieldId: 'deposit', line: i });
+                linesForThisOrder.push({ line: i, transactionId: id, amount: amt, alreadyTicked: ticked });
+
+                if (ticked) { tickedAlready = true; continue; }
+                if (Math.abs(amt - refundAmount) < 0.01 && matchedLine === -1) {
+                    matchedLine = i;
+                    matchedRefundId = id;
+                }
+            }
+
+            log.audit('7. Deposit payment sublist', {
+                totalAvailableLines: paymentCount,
+                linesForThisOrder: linesForThisOrder
+            });
+
+            /* ---------- 8. cash back line ---------- */
+            const cashBackCount = deposit.getLineCount({ sublistId: 'cashback' });
+            const cashBackRows = [];
+            let varianceLine = -1;
+
+            for (let i = 0; i < cashBackCount; i++) {
+                const memo = deposit.getSublistValue({ sublistId: 'cashback', fieldId: 'memo', line: i });
+                const amt  = parseFloat(deposit.getSublistValue({ sublistId: 'cashback', fieldId: 'amount', line: i })) || 0;
+                cashBackRows.push({ line: i, memo: memo, amount: amt });
+                if (String(memo || '').trim().toLowerCase() === CASHBACK_MEMO && varianceLine === -1) varianceLine = i;
+            }
+
+            log.audit('8. Deposit cash back sublist', { lines: cashBackRows, varianceLineIndex: varianceLine });
+
+            if (varianceLine === -1) plan.problems.push('no cash back line with memo "' + CASHBACK_MEMO + '" - the live script would fail here');
+
+            /* ---------- 9. the plan ---------- */
+            if (matchedLine >= 0) {
+                plan.refundAction = 'REUSE_EXISTING';
+                plan.refundId = matchedRefundId;
+                plan.depositPaymentLine = matchedLine;
+            } else if (matchedRefunds.length && tickedAlready) {
+                plan.refundAction = 'CREATE_NEW';
+                plan.refundId = 'existing refund is already ticked on a deposit - would create a new one from customer deposit ' + customerDepositId;
+                plan.problems.push('matching refund found but already deposited - confirm this is not a double refund before going live');
+            } else {
+                plan.refundAction = 'CREATE_NEW';
+                plan.refundId = 'would transform customer deposit ' + customerDepositId +
+                    ' into a customer refund of ' + refundAmount + ' dated ' + depositInfo.trandate;
+            }
+
+            if (varianceLine >= 0) {
+                plan.cashBackBefore = cashBackRows[varianceLine].amount;
+                plan.cashBackAfter  = Math.round((plan.cashBackBefore - refundAmount) * 100) / 100;
+                if (plan.cashBackAfter < -0.001) plan.problems.push('cash back line is smaller than the refund amount - the live script would fail here');
+            }
+
+            /* ---------- 9a-9d. every write the live script would perform ---------- */
+            const refundLabel = (plan.refundAction === 'REUSE_EXISTING')
+                ? 'existing refund ' + matchedRefundId
+                : 'the newly created refund';
+
+            if (plan.refundAction === 'REUSE_EXISTING') {
+                log.audit('9a. WOULD NOT CREATE A REFUND - reusing one', {
+                    refundId: matchedRefundId,
+                    reason: 'already exists, applies customer deposit ' + customerDepositId + ', not yet on any bank deposit'
+                });
+                plan.plannedActions.push('REUSE customer refund ' + matchedRefundId + ' (no new record created)');
+            } else {
+                log.audit('9a. WOULD CREATE A CUSTOMER REFUND', {
+                    method: 'record.transform customerdeposit -> customerrefund',
+                    fromCustomerDeposit: customerDepositId + ' (' + custDeposits[0].tranid + ')',
+                    amount: refundAmount,
+                    trandate: depositInfo.trandate,
+                    account: REFUND_ACCOUNT,
+                    customer: soResult[0].getText('entity'),
+                    appliesDepositLine: true
+                });
+                plan.plannedActions.push('CREATE customer refund of ' + refundAmount + ' from customer deposit ' + customerDepositId);
+            }
+
+            log.audit('9b. WOULD TICK THE REFUND ON THE BANK DEPOSIT', {
+                bankDeposit: bankDepositId + ' (' + depositInfo.tranid + ')',
+                refund: refundLabel,
+                paymentSublistLine: (matchedLine >= 0) ? matchedLine : 'not known yet - refund does not exist until the live run creates it',
+                depositCheckbox: 'false -> true',
+                effectOnDepositTotal: 'minus ' + refundAmount
+            });
+            plan.plannedActions.push('TICK ' + refundLabel + ' on bank deposit ' + depositInfo.tranid);
+
+            if (varianceLine >= 0) {
+                log.audit('9c. WOULD REDUCE THE CASH BACK VARIANCE LINE', {
+                    bankDeposit: depositInfo.tranid,
+                    cashBackLine: varianceLine,
+                    memo: cashBackRows[varianceLine].memo,
+                    amountBefore: plan.cashBackBefore,
+                    amountAfter: plan.cashBackAfter,
+                    lineWouldBeRemoved: (Math.abs(plan.cashBackAfter) < 0.001),
+                    feesLineTouched: false,
+                    depositTotalAfterBothChanges: 'unchanged (' + depositInfo.total + ')'
+                });
+                plan.plannedActions.push('REDUCE cash back "' + cashBackRows[varianceLine].memo + '" from ' + plan.cashBackBefore + ' to ' + plan.cashBackAfter);
+            }
+
+            log.audit('9d. WOULD UPDATE THIS VARIANCE RECORD', {
+                varianceRecord: rec.id,
+                custrecord_related_netsuite_transaction: refundLabel,
+                isinactive: 'false -> true'
+            });
+            plan.plannedActions.push('STAMP ' + refundLabel + ' on variance record ' + rec.id + ' and set it inactive');
+
+            plan.wouldProceed = true;
 
         } catch (e) {
-            log.error('Variance refund FAILED - record ' + rec.id + ' left active', { message: e.message, stack: e.stack });
+            plan.stoppedAt = 'ERROR: ' + e.message;
+            log.error('Dry run error', { message: e.message, stack: e.stack });
+        } finally {
+            log.audit('=== DRY RUN RESULT (nothing was saved) ===', plan);
         }
     };
 
