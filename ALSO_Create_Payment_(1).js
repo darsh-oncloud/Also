@@ -5,13 +5,6 @@
 define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
 
-      function beforeSubmit(context) {
-        var rec = context.newRecord;
-        if (rec.getValue({ fieldId: 'custbody_ava_disable_tax_calculation' })) {
-            rec.setValue({ fieldId: 'custbody_ava_disable_tax_calculation', value: true });
-        }
-    }
-
     function afterSubmit(context) {
         try {
             if (context.type !== context.UserEventType.CREATE &&
@@ -368,7 +361,6 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     }
 
     return {
-        beforeSubmit: beforeSubmit,
         afterSubmit: afterSubmit
     };
 });
