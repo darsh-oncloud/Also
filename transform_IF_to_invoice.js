@@ -2,20 +2,98 @@
  * @NApiVersion 2.1
  * @NScriptType UserEventScript
  */
-define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
+define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, https, search) {
 
     var TM_B_ITEM_ID = 909;
     var AR_ACCOUNT = 675;
     var KEY_FIELD = 'custcol_3pl_fulfillment_key';
+
+    // SHIPPING
+    var TYPE_FIELD = 'custcol_item_parentcomp';
+    var TYPE_PARENT = '1';
+    var PARENT_SHIPPING = 150;
+
     var SUITELET_URL = 'https://1039693.extforms.netsuite.com/app/site/hosting/scriptlet.nl'
         + '?script=3296&deploy=1&compid=1039693'
         + '&ns-at=AAEJ7tMQ7FbIvC7C4CXmDC6HpNyrI0buOQ0wPxjhFUdFg5WJjWA';
 
-    function afterSubmit(context) {
+
+    function beforeSubmit(context) {
         try {
-            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) {
+            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) return;
+
+            var fulfillment = context.newRecord;
+            var fulfillmentId = fulfillment.id;
+            var salesOrderId = fulfillment.getValue({ fieldId: 'createdfrom' });
+
+            if (!salesOrderId) return;
+
+            var so = record.load({ type: record.Type.SALES_ORDER, id: salesOrderId });
+            var soShipping = Number(so.getValue({ fieldId: 'shippingcost' })) || 0;
+
+            if (!soShipping) {
+                fulfillment.setValue({ fieldId: 'shippingcost', value: 0 });
                 return;
             }
+
+            var parentQty = 0;
+            var lineCount = fulfillment.getLineCount({ sublistId: 'item' });
+
+            for (var i = 0; i < lineCount; i++) {
+                var itemReceive = fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'itemreceive', line: i });
+                if (!itemReceive) continue;
+
+                var type = String(fulfillment.getSublistValue({ sublistId: 'item', fieldId: TYPE_FIELD, line: i }) || '');
+
+                if (type === TYPE_PARENT) {
+                    parentQty += Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: i })) || 0;
+                }
+            }
+
+            var currentShipping = parentQty * PARENT_SHIPPING;
+            var previousShipping = 0;
+
+            var filters = [
+                ['createdfrom', 'anyof', salesOrderId],
+                'AND',
+                ['mainline', 'is', 'T']
+            ];
+
+            if (fulfillmentId) filters.push('AND', ['internalid', 'noneof', fulfillmentId]);
+
+            search.create({
+                type: search.Type.ITEM_FULFILLMENT,
+                filters: filters,
+                columns: [search.createColumn({ name: 'shippingamount', summary: search.Summary.SUM })]
+            }).run().each(function (result) {
+                previousShipping = Number(result.getValue({ name: 'shippingamount', summary: search.Summary.SUM })) || 0;
+                return false;
+            });
+
+            var totalShipping = previousShipping + currentShipping;
+            var shippingToSet = totalShipping <= soShipping ? currentShipping : 0;
+
+            fulfillment.setValue({ fieldId: 'shippingcost', value: shippingToSet });
+
+            log.audit('Shipping Calculation', {
+                salesOrder: salesOrderId,
+                soShipping: soShipping,
+                parentQty: parentQty,
+                currentShipping: currentShipping,
+                previousShipping: previousShipping,
+                totalShipping: totalShipping,
+                shippingApplied: shippingToSet
+            });
+
+        } catch (e) {
+            log.error('Shipping Calculation Error', e.name + ': ' + e.message);
+        }
+    }
+
+
+    function afterSubmit(context) {
+        try {
+            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) return;
 
             var fulfillment = context.newRecord;
             var fulfillmentId = fulfillment.id;
@@ -29,8 +107,7 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
 
             var lineCount = fulfillment.getLineCount({ sublistId: 'item' });
 
-            // --- Shortcut: only line on the fulfillment is the TM-B deposit item ---
-            // Nothing to invoice; just close that line on the Sales Order.
+            // Only TM-B item
             if (lineCount === 1) {
                 var onlyItemId = Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'item', line: 0 }));
 
@@ -41,7 +118,6 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
                 }
             }
 
-            // --- Single pass: bucket fulfilled lines by 3PL Fulfillment Key, flag deposit item ---
             var fulfilledLines = {};
             var hasDepositItem = false;
             var fulfillmentLocation = '';
@@ -62,37 +138,37 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
 
                 fulfilledLines[String(fulfillmentKey)] = Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: i })) || 0;
 
-                if (!fulfillmentLocation) {
-                    fulfillmentLocation = fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'location', line: i });
-                }
+                if (!fulfillmentLocation) fulfillmentLocation = fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'location', line: i });
             }
 
-            var invoiceId = createInvoice(salesOrderId, fulfilledLines, fulfillmentLocation, fulfillmentId);
+            var fulfillmentShipping = Number(fulfillment.getValue({ fieldId: 'shippingcost' })) || 0;
 
-            if (hasDepositItem) {
-                closeSoLine(salesOrderId, TM_B_ITEM_ID);
-            }
+            var invoiceId = createInvoice(
+                salesOrderId,
+                fulfilledLines,
+                fulfillmentLocation,
+                fulfillmentId,
+                fulfillmentShipping
+            );
 
-            if (invoiceId) {
-                https.get({ url: SUITELET_URL + '&recid=' + invoiceId });
-            }
+            if (hasDepositItem) closeSoLine(salesOrderId, TM_B_ITEM_ID);
+
+            if (invoiceId) https.get({ url: SUITELET_URL + '&recid=' + invoiceId });
 
         } catch (e) {
             log.error('Invoice Creation Error', e.name + ': ' + e.message);
         }
     }
 
-    /**
-     * Transforms the Sales Order to an Invoice, keeping only lines whose
-     * KEY_FIELD matches something fulfilled, and sets quantity to what was fulfilled.
-     */
-    function createInvoice(salesOrderId, fulfilledLines, fulfillmentLocation, fulfillmentId) {
+
+    function createInvoice(salesOrderId, fulfilledLines, fulfillmentLocation, fulfillmentId, fulfillmentShipping) {
         if (!Object.keys(fulfilledLines).length) {
             log.audit('Invoice Not Created', 'No fulfilled lines with a ' + KEY_FIELD + ' were found.');
             return null;
         }
 
         var invoice;
+
         try {
             invoice = record.transform({
                 fromType: record.Type.SALES_ORDER,
@@ -106,7 +182,9 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
         }
 
         invoice.setValue({ fieldId: 'account', value: AR_ACCOUNT });
-        invoice.setValue({ fieldId: 'shippingcost', value: 0 });
+
+        // UPDATED: use fulfillment shipping instead of 0
+        invoice.setValue({ fieldId: 'shippingcost', value: fulfillmentShipping || 0 });
 
         var lineCount = invoice.getLineCount({ sublistId: 'item' });
 
@@ -128,16 +206,20 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
             return null;
         }
 
-        if (fulfillmentLocation) {
-            invoice.setValue({ fieldId: 'location', value: fulfillmentLocation });
-        }
+        if (fulfillmentLocation) invoice.setValue({ fieldId: 'location', value: fulfillmentLocation });
 
         var invoiceId = invoice.save({ enableSourcing: true, ignoreMandatoryFields: true });
-        log.audit('Invoice Created', 'Invoice ' + invoiceId + ' created from Item Fulfillment ' + fulfillmentId);
+
+        log.audit('Invoice Created', {
+            invoiceId: invoiceId,
+            fulfillmentId: fulfillmentId,
+            shippingCost: fulfillmentShipping
+        });
+
         return invoiceId;
     }
 
-    /** Marks the given item's line as closed on the Sales Order. */
+
     function closeSoLine(salesOrderId, itemId) {
         try {
             var so = record.load({ type: record.Type.SALES_ORDER, id: salesOrderId, isDynamic: true });
@@ -151,12 +233,15 @@ define(['N/record', 'N/log', 'N/https'], function (record, log, https) {
             so.save({ enableSourcing: true, ignoreMandatoryFields: true });
 
             log.audit('SO Line Closed', 'Item ' + itemId + ' line closed on Sales Order ' + salesOrderId);
+
         } catch (e) {
             log.error('SO Line Close Error', e.name + ': ' + e.message);
         }
     }
 
+
     return {
+        beforeSubmit: beforeSubmit,
         afterSubmit: afterSubmit
     };
 });
