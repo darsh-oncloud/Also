@@ -5,7 +5,7 @@
 define(['N/https', 'N/search', 'N/record', 'N/log'],
 (https, search, record, log) => {
 
-    const CELIGO_TOKEN = 'PASTE_YOUR_CELIGO_TOKEN_HERE';
+    const CELIGO_TOKEN = '71043b5157f14d0980541cce2081edc3';
 
     const FLOW_ID = '68e819893fe2e005c7712f48';
     const STEP_ID = '68e8197b53e4a108b091452c';
