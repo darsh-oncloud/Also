@@ -10,12 +10,13 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
     const FLOW_ID = '68e819893fe2e005c7712f48';
     const STEP_ID = '68e8197b53e4a108b091452c';
 
+    // ONLY THIS ORDER / ERROR FOR PROD TEST
     const SHOPIFY_ORDER_ID = '6664684142816';
     const ERROR_TEXT = 'Items on this line have been fulfilled';
 
-    // VERIFY THESE 2 FIELD IDS IN PROD
+    // VERIFY THESE ARE CORRECT IN PROD
     const ORDER_ID_FIELD = 'custbody_celigo_etail_order_id';
-    const LINE_ID_FIELD  = 'custcol_celigo_etail_order_line_id';
+    const LINE_ID_FIELD = 'custcol_celigo_etail_order_line_id';
 
 
     const getInputData = () => {
@@ -51,7 +52,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             error: matched[0] || 'NONE'
         });
 
-        // ONLY ONE ERROR
+        // ONLY PROCESS ONE ERROR
         return matched.slice(0, 1);
     };
 
@@ -64,7 +65,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             const raw = JSON.stringify(err);
 
 
-            // SECOND SAFETY CHECK
+            /*
+             * SECOND SAFETY CHECK
+             */
             if (
                 !raw.includes(SHOPIFY_ORDER_ID) ||
                 !raw.includes(ERROR_TEXT)
@@ -75,37 +78,100 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
             log.audit('MATCHED ERROR', {
-                id: err._id || err.id,
+                errorId: err.errorId,
+                retryDataKey: err.retryDataKey,
+                traceKey: err.traceKey,
                 message: err.message
             });
 
 
             /*
-             * GET ORIGINAL FAILED SHOPIFY PAYLOAD
+             * GET RETRY DATA KEY FROM CELIGO ERROR
              */
-            let payload =
-                err.retryData?.data ||
-                err.retryData ||
-                err.data ||
-                err.record ||
-                err.payload;
+            const retryDataKey = err.retryDataKey;
 
 
-            if (typeof payload === 'string') {
-                try {
-                    payload = JSON.parse(payload);
-                } catch (e) {}
+            if (!retryDataKey) {
+                log.error('NO RETRY DATA KEY', err);
+                return;
             }
 
 
             /*
-             * IF CELIGO PAYLOAD STRUCTURE IS DIFFERENT,
-             * DO NOT TOUCH NETSUITE.
+             * GET ACTUAL FAILED SHOPIFY PAYLOAD
+             */
+            const retryRes = https.get({
+                url: `https://api.integrator.io/v1/flows/${FLOW_ID}/${STEP_ID}/${retryDataKey}/data`,
+                headers: {
+                    Authorization: `Bearer ${CELIGO_TOKEN}`,
+                    Accept: 'application/json'
+                }
+            });
+
+
+            log.audit('RETRY DATA RESPONSE', {
+                code: retryRes.code,
+                body: retryRes.body
+            });
+
+
+            if (Number(retryRes.code) !== 200) {
+                log.error('RETRY DATA API ERROR', {
+                    code: retryRes.code,
+                    body: retryRes.body
+                });
+                return;
+            }
+
+
+            /*
+             * CELIGO RESPONSE:
+             *
+             * {
+             *    data: { SHOPIFY PAYLOAD },
+             *    stage: "...",
+             *    traceKey: "..."
+             * }
+             */
+            const retryBody = JSON.parse(retryRes.body);
+
+            let payload = retryBody.data || retryBody;
+
+
+            /*
+             * SOMETIMES DATA MAY BE STRINGIFIED
+             */
+            if (typeof payload === 'string') {
+                try {
+                    payload = JSON.parse(payload);
+                } catch (e) {
+                    log.error('INVALID PAYLOAD JSON', payload);
+                    return;
+                }
+            }
+
+
+            /*
+             * SOME CELIGO PAYLOADS CAN HAVE RECORD WRAPPER
+             */
+            if (
+                payload &&
+                !Array.isArray(payload.line_items) &&
+                payload.record
+            ) {
+                payload = payload.record;
+            }
+
+
+            /*
+             * SAFETY - DO NOT TOUCH NETSUITE
+             * UNLESS SHOPIFY LINE ITEMS ARE FOUND
              */
             if (!payload || !Array.isArray(payload.line_items)) {
 
-                log.error('PAYLOAD NOT FOUND', {
-                    fullError: err
+                log.error('SHOPIFY PAYLOAD NOT FOUND', {
+                    retryDataKey: retryDataKey,
+                    retryBody: retryBody
                 });
 
                 return;
@@ -115,6 +181,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             const orderId = String(payload.id || '');
 
 
+            /*
+             * MAKE SURE IT IS OUR TEST ORDER
+             */
             if (orderId !== SHOPIFY_ORDER_ID) {
 
                 log.audit('SKIPPED ORDER', {
@@ -149,7 +218,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                 ],
                 columns: ['internalid']
             }).run().each(r => {
-
                 soId = r.id;
                 return false;
             });
@@ -179,9 +247,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
             /*
-             * BUILD SHOPIFY LINE MAP
+             * SHOPIFY LINE MAP
              *
-             * Shopify Line ID
+             * Shopify line_items[].id
              * =
              * NetSuite eTail Order Line ID
              */
@@ -196,9 +264,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
             /*
-             * CHECK NETSUITE EXISTING LINES
+             * CHECK CURRENT NETSUITE LINES
              *
-             * LOOP BACKWARDS BECAUSE WE MAY REMOVE LINES.
+             * BACKWARDS BECAUSE LINES MAY BE REMOVED
              */
             for (
                 let i = so.getLineCount({ sublistId: 'item' }) - 1;
@@ -218,8 +286,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                 /*
                  * BLANK ETAIL LINE ID
                  *
-                 * NETSUITE AUTOMATION ITEM.
-                 * NEVER TOUCH.
+                 * CREATED BY NETSUITE AUTOMATION
+                 * DO NOT TOUCH
                  */
                 if (!lineId) {
 
@@ -233,14 +301,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
                 existing[lineId] = true;
 
-
                 const s = shop[lineId];
 
 
                 /*
-                 * NOT PRESENT IN PAYLOAD
-                 *
-                 * DO NOT BLINDLY REMOVE.
+                 * NOT PRESENT IN SHOPIFY PAYLOAD
+                 * LEAVE IT ALONE
                  */
                 if (!s) {
 
@@ -278,7 +344,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * SHOPIFY REMOVED LINE
+                 * SHOPIFY REMOVED ITEM
                  *
                  * current_quantity = 0
                  */
@@ -286,7 +352,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                     /*
-                     * NEVER REMOVE FULFILLED LINE
+                     * NEVER REMOVE ALREADY FULFILLED ITEM
                      */
                     if (
                         fulfilled > 0 ||
@@ -322,9 +388,9 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * ALREADY FULFILLED
+                 * EXISTING FULFILLED LINE
                  *
-                 * DO NOT CHANGE QTY / ITEM / PRICE.
+                 * DO NOT TOUCH ITEM / QTY / PRICE
                  */
                 if (
                     fulfilled > 0 ||
@@ -370,7 +436,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
             /*
-             * ADD NEW SHOPIFY LINES
+             * ADD NEW SHOPIFY ITEMS
              */
             payload.line_items.forEach(s => {
 
@@ -378,7 +444,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * ALREADY EXISTS
+                 * ALREADY EXISTS IN NETSUITE
                  */
                 if (existing[lineId]) return;
 
@@ -395,11 +461,25 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                 if (s.fulfillment_status === 'fulfilled') return;
 
 
+                /*
+                 * SKU REQUIRED
+                 */
+                if (!s.sku) {
+
+                    log.error('NEW ITEM HAS NO SKU', {
+                        lineId: lineId,
+                        item: s
+                    });
+
+                    return;
+                }
+
+
                 let itemId;
 
 
                 /*
-                 * FIND NETSUITE ITEM USING SKU
+                 * FIND NETSUITE ITEM BY SKU
                  */
                 search.create({
                     type: search.Type.ITEM,
@@ -410,7 +490,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                     ],
                     columns: ['internalid']
                 }).run().each(r => {
-
                     itemId = r.id;
                     return false;
                 });
@@ -455,7 +534,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * ADD SHOPIFY / ETAIL LINE ID
+                 * ADD ETAIL / SHOPIFY LINE ID
                  */
                 so.setSublistValue({
                     sublistId: 'item',
@@ -470,7 +549,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                  */
                 if (
                     s.price !== undefined &&
-                    s.price !== null
+                    s.price !== null &&
+                    s.price !== ''
                 ) {
 
                     so.setSublistValue({
@@ -491,6 +571,7 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 log.audit('ADDED', {
+                    item: s.name,
                     sku: s.sku,
                     itemId: itemId,
                     lineId: lineId,
@@ -512,7 +593,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             log.audit('SALES ORDER UPDATED', {
                 salesOrderId: savedId,
                 shopifyOrderId: orderId,
-                celigoErrorId: err._id || err.id
+                errorId: err.errorId,
+                retryDataKey: retryDataKey
             });
 
 
