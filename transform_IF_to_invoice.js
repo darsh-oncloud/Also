@@ -12,6 +12,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
     var TYPE_FIELD = 'custcol_item_parentcomp';
     var TYPE_PARENT = '1';
     var TYPE_OFF_BIKE = '4';
+    var TYPE_ON_BIKE = '3';
 
     // Item fields
     var ALSO_CATEGORY_FIELD = 'custitem_also_category';
@@ -137,12 +138,12 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
                 var qty = Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: i })) || 0;
 
                 if (!itemId || Number(itemId) === TM_B_ITEM_ID) continue;
-                if (type !== TYPE_PARENT && type !== TYPE_OFF_BIKE) continue;
+                if (type !== TYPE_PARENT && type !== TYPE_OFF_BIKE && type !== TYPE_ON_BIKE) continue;
 
                 lines.push({ itemId: itemId, type: type, qty: qty });
 
                 // Parent doesn't need Item lookup; Off-Bike does
-                if (type === TYPE_OFF_BIKE && itemIds.indexOf(itemId) === -1) itemIds.push(itemId);
+                if (type === TYPE_OFF_BIKE || type === TYPE_ON_BIKE && itemIds.indexOf(itemId) === -1) itemIds.push(itemId);
             }
 
             if (!lines.length) {
@@ -209,7 +210,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
 
 
                 // Off-Bike = match Item Category + Category + Merch
-                if (line.type === TYPE_OFF_BIKE) {
+                if (line.type ===  || line.type === TYPE_ON_BIKE) {
                     var item = itemData[line.itemId];
                     if (!item) continue;
 
