@@ -8,87 +8,26 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
     var AR_ACCOUNT = 675;
     var KEY_FIELD = 'custcol_3pl_fulfillment_key';
 
-    // SHIPPING
+    // Parent / Component line type
     var TYPE_FIELD = 'custcol_item_parentcomp';
     var TYPE_PARENT = '1';
-    var PARENT_SHIPPING = 150;
+    var TYPE_OFF_BIKE = '4';
+
+    // Item fields
+    var ITEM_CATEGORY_FIELD = 'custitem_item_category';
+    var ALSO_CATEGORY_FIELD = 'custitem_also_category';
+    var MERCH_FIELD = 'custitem_merch_item';
+
+    // Shipping Rate Setup
+    var SHIPPING_RECORD = 'customrecord_shipping_rate_setup'; // VERIFY THIS ID
+    var SHIP_ITEM_CATEGORY = 'custrecord_item_category';
+    var SHIP_CATEGORY = 'custrecord_category';
+    var SHIP_COST = 'custrecord_shipping_cost';
+    var SHIP_MERCH = 'custrecord_merch_item';
 
     var SUITELET_URL = 'https://1039693.extforms.netsuite.com/app/site/hosting/scriptlet.nl'
         + '?script=3296&deploy=1&compid=1039693'
         + '&ns-at=AAEJ7tMQ7FbIvC7C4CXmDC6HpNyrI0buOQ0wPxjhFUdFg5WJjWA';
-
-
-    function beforeSubmit(context) {
-        try {
-            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) return;
-
-            var fulfillment = context.newRecord;
-            var fulfillmentId = fulfillment.id;
-            var salesOrderId = fulfillment.getValue({ fieldId: 'createdfrom' });
-
-            if (!salesOrderId) return;
-
-            var so = record.load({ type: record.Type.SALES_ORDER, id: salesOrderId });
-            var soShipping = Number(so.getValue({ fieldId: 'shippingcost' })) || 0;
-
-            if (!soShipping) {
-                fulfillment.setValue({ fieldId: 'shippingcost', value: 0 });
-                return;
-            }
-
-            var parentQty = 0;
-            var lineCount = fulfillment.getLineCount({ sublistId: 'item' });
-
-            for (var i = 0; i < lineCount; i++) {
-                var itemReceive = fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'itemreceive', line: i });
-                if (!itemReceive) continue;
-
-                var type = String(fulfillment.getSublistValue({ sublistId: 'item', fieldId: TYPE_FIELD, line: i }) || '');
-
-                if (type === TYPE_PARENT) {
-                    parentQty += Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: i })) || 0;
-                }
-            }
-
-            var currentShipping = parentQty * PARENT_SHIPPING;
-            var previousShipping = 0;
-
-            var filters = [
-                ['createdfrom', 'anyof', salesOrderId],
-                'AND',
-                ['mainline', 'is', 'T']
-            ];
-
-            if (fulfillmentId) filters.push('AND', ['internalid', 'noneof', fulfillmentId]);
-
-            search.create({
-                type: search.Type.ITEM_FULFILLMENT,
-                filters: filters,
-                columns: [search.createColumn({ name: 'shippingamount', summary: search.Summary.SUM })]
-            }).run().each(function (result) {
-                previousShipping = Number(result.getValue({ name: 'shippingamount', summary: search.Summary.SUM })) || 0;
-                return false;
-            });
-
-            var totalShipping = previousShipping + currentShipping;
-            var shippingToSet = totalShipping <= soShipping ? currentShipping : 0;
-
-            fulfillment.setValue({ fieldId: 'shippingcost', value: shippingToSet });
-
-            log.audit('Shipping Calculation', {
-                salesOrder: salesOrderId,
-                soShipping: soShipping,
-                parentQty: parentQty,
-                currentShipping: currentShipping,
-                previousShipping: previousShipping,
-                totalShipping: totalShipping,
-                shippingApplied: shippingToSet
-            });
-
-        } catch (e) {
-            log.error('Shipping Calculation Error', e.name + ': ' + e.message);
-        }
-    }
 
 
     function afterSubmit(context) {
@@ -107,7 +46,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
 
             var lineCount = fulfillment.getLineCount({ sublistId: 'item' });
 
-            // Only TM-B item
+            // Only TM-B deposit item
             if (lineCount === 1) {
                 var onlyItemId = Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'item', line: 0 }));
 
@@ -141,22 +80,226 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
                 if (!fulfillmentLocation) fulfillmentLocation = fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'location', line: i });
             }
 
-            var fulfillmentShipping = Number(fulfillment.getValue({ fieldId: 'shippingcost' })) || 0;
 
-            var invoiceId = createInvoice(
-                salesOrderId,
-                fulfilledLines,
-                fulfillmentLocation,
-                fulfillmentId,
-                fulfillmentShipping
-            );
+            // ---------------- SHIPPING ----------------
+            var fulfillmentShipping = getShippingCost(fulfillment, salesOrderId, fulfillmentId);
+            var currentIFShipping = Number(fulfillment.getValue({ fieldId: 'shippingcost' })) || 0;
+
+            if (currentIFShipping !== fulfillmentShipping) {
+                record.submitFields({
+                    type: record.Type.ITEM_FULFILLMENT,
+                    id: fulfillmentId,
+                    values: { shippingcost: fulfillmentShipping },
+                    options: { enableSourcing: false, ignoreMandatoryFields: true }
+                });
+
+                log.audit('IF Shipping Updated', {
+                    fulfillmentId: fulfillmentId,
+                    oldShipping: currentIFShipping,
+                    newShipping: fulfillmentShipping
+                });
+            }
+
+
+            // ---------------- INVOICE ----------------
+            var invoiceId = createInvoice(salesOrderId, fulfilledLines, fulfillmentLocation, fulfillmentId, fulfillmentShipping);
 
             if (hasDepositItem) closeSoLine(salesOrderId, TM_B_ITEM_ID);
-
             if (invoiceId) https.get({ url: SUITELET_URL + '&recid=' + invoiceId });
 
         } catch (e) {
             log.error('Invoice Creation Error', e.name + ': ' + e.message);
+        }
+    }
+
+
+    function getShippingCost(fulfillment, salesOrderId, fulfillmentId) {
+        try {
+            // 1. Get SO shipping
+            var so = record.load({ type: record.Type.SALES_ORDER, id: salesOrderId });
+            var soShipping = Number(so.getValue({ fieldId: 'shippingcost' })) || 0;
+
+            if (!soShipping) {
+                log.audit('Shipping Skipped', 'Sales Order ' + salesOrderId + ' has no shipping cost.');
+                return 0;
+            }
+
+
+            // 2. Read only Parent + Off-Bike fulfilled lines
+            var lines = [];
+            var itemIds = [];
+            var lineCount = fulfillment.getLineCount({ sublistId: 'item' });
+
+            for (var i = 0; i < lineCount; i++) {
+                if (!fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'itemreceive', line: i })) continue;
+
+                var itemId = String(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i }) || '');
+                var type = String(fulfillment.getSublistValue({ sublistId: 'item', fieldId: TYPE_FIELD, line: i }) || '');
+                var qty = Number(fulfillment.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: i })) || 0;
+
+                if (!itemId || Number(itemId) === TM_B_ITEM_ID) continue;
+                if (type !== TYPE_PARENT && type !== TYPE_OFF_BIKE) continue;
+
+                lines.push({ itemId: itemId, type: type, qty: qty });
+
+                // Parent doesn't need Item lookup; Off-Bike does
+                if (type === TYPE_OFF_BIKE && itemIds.indexOf(itemId) === -1) itemIds.push(itemId);
+            }
+
+            if (!lines.length) {
+                log.audit('Shipping Calculation', 'No Parent or Off-Bike lines found.');
+                return 0;
+            }
+
+
+            // 3. Get Off-Bike item attributes
+            var itemData = {};
+
+            if (itemIds.length) {
+                search.create({
+                    type: search.Type.ITEM,
+                    filters: [['internalid', 'anyof', itemIds]],
+                    columns: ['internalid', ITEM_CATEGORY_FIELD, ALSO_CATEGORY_FIELD, MERCH_FIELD]
+                }).run().each(function (r) {
+
+                    itemData[String(r.id)] = {
+                        itemCategory: String(r.getValue(ITEM_CATEGORY_FIELD) || ''),
+                        category: String(r.getValue(ALSO_CATEGORY_FIELD) || ''),
+                        merch: r.getValue(MERCH_FIELD) === true || r.getValue(MERCH_FIELD) === 'T'
+                    };
+
+                    return true;
+                });
+            }
+
+
+            // 4. Load Shipping Rate Setup records
+            var rules = {};
+
+            search.create({
+                type: SHIPPING_RECORD,
+                filters: [['isinactive', 'is', 'F']],
+                columns: [SHIP_ITEM_CATEGORY, SHIP_CATEGORY, SHIP_MERCH, SHIP_COST]
+            }).run().each(function (r) {
+
+                var itemCategory = String(r.getValue(SHIP_ITEM_CATEGORY) || '');
+                var category = String(r.getValue(SHIP_CATEGORY) || '');
+                var merch = r.getValue(SHIP_MERCH) === true || r.getValue(SHIP_MERCH) === 'T';
+                var rate = Number(r.getValue(SHIP_COST)) || 0;
+
+                rules[itemCategory + '|' + category + '|' + (merch ? 'T' : 'F')] = rate;
+                return true;
+            });
+
+
+            // 5. Calculate current IF shipping
+            var calculatedShipping = 0;
+
+            for (var x = 0; x < lines.length; x++) {
+                var line = lines[x];
+                var itemCategory = '';
+                var category = '';
+                var merch = false;
+                var rate = 0;
+
+
+                // Parent = Parent setup record
+                if (line.type === TYPE_PARENT) {
+                    itemCategory = TYPE_PARENT;
+                    rate = Number(rules[TYPE_PARENT + '||F']) || 0;
+                }
+
+
+                // Off-Bike = match Item Category + Category + Merch
+                if (line.type === TYPE_OFF_BIKE) {
+                    var item = itemData[line.itemId];
+                    if (!item) continue;
+
+                    itemCategory = item.itemCategory;
+                    category = item.category;
+                    merch = item.merch;
+
+                    // Exact match first
+                    rate = Number(rules[itemCategory + '|' + category + '|' + (merch ? 'T' : 'F')]) || 0;
+
+                    // Merch setup has blank Category
+                    if (!rate && merch) rate = Number(rules[itemCategory + '||T']) || 0;
+                }
+
+
+                var amount = rate * line.qty;
+                calculatedShipping += amount;
+
+                log.audit('Shipping Line', {
+                    item: line.itemId,
+                    type: line.type,
+                    itemCategory: itemCategory,
+                    category: category,
+                    merch: merch,
+                    qty: line.qty,
+                    rate: rate,
+                    amount: amount
+                });
+
+                if (!rate) {
+                    log.audit('Shipping Rate Not Found', {
+                        item: line.itemId,
+                        type: line.type,
+                        itemCategory: itemCategory,
+                        category: category,
+                        merch: merch
+                    });
+                }
+            }
+
+
+            // 6. Sum shipping already used on other IFs
+            var previousShipping = 0;
+
+            search.create({
+                type: search.Type.ITEM_FULFILLMENT,
+                filters: [
+                    ['createdfrom', 'anyof', salesOrderId],
+                    'AND',
+                    ['mainline', 'is', 'T'],
+                    'AND',
+                    ['internalid', 'noneof', fulfillmentId]
+                ],
+                columns: [
+                    search.createColumn({
+                        name: 'shippingamount',
+                        summary: search.Summary.SUM
+                    })
+                ]
+            }).run().each(function (r) {
+
+                previousShipping = Number(r.getValue({
+                    name: 'shippingamount',
+                    summary: search.Summary.SUM
+                })) || 0;
+
+                return false;
+            });
+
+
+            // 7. Never exceed SO shipping
+            var totalShipping = previousShipping + calculatedShipping;
+            var shippingToSet = totalShipping <= soShipping ? calculatedShipping : 0;
+
+            log.audit('Shipping Calculation', {
+                salesOrder: salesOrderId,
+                soShipping: soShipping,
+                calculatedShipping: calculatedShipping,
+                previousShipping: previousShipping,
+                totalShipping: totalShipping,
+                shippingApplied: shippingToSet
+            });
+
+            return shippingToSet;
+
+        } catch (e) {
+            log.error('Shipping Calculation Error', e.name + ': ' + e.message);
+            return 0;
         }
     }
 
@@ -182,8 +325,6 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
         }
 
         invoice.setValue({ fieldId: 'account', value: AR_ACCOUNT });
-
-        // UPDATED: use fulfillment shipping instead of 0
         invoice.setValue({ fieldId: 'shippingcost', value: fulfillmentShipping || 0 });
 
         var lineCount = invoice.getLineCount({ sublistId: 'item' });
@@ -241,7 +382,6 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
 
 
     return {
-        beforeSubmit: beforeSubmit,
         afterSubmit: afterSubmit
     };
 });
