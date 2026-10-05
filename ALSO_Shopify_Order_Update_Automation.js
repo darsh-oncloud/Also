@@ -5,18 +5,20 @@
 define(['N/https', 'N/search', 'N/record', 'N/log'],
 (https, search, record, log) => {
 
-    const CELIGO_TOKEN = '71043b5157f14d0980541cce2081edc3';
+    const CELIGO_TOKEN = 'PASTE_YOUR_CELIGO_TOKEN_HERE';
 
-    const FLOW_ID = '68e819893fe2e005c7712f48';
-    const STEP_ID = '68e8197b53e4a108b091452c';
+    // SANDBOX
+    const FLOW_ID = '69d94f8865d2a8beb0848e97';
+    const STEP_ID = '69d94f8635b6551adf3a9f8c';
 
-    // ONLY THIS ORDER / ERROR FOR PROD TEST
-    const SHOPIFY_ORDER_ID = '6664684142816';
-    const ERROR_TEXT = 'Items on this line have been fulfilled';
-
-    // VERIFY THESE ARE CORRECT IN PROD
+    // NETSUITE FIELDS
     const ORDER_ID_FIELD = 'custbody_celigo_etail_order_id';
     const LINE_ID_FIELD = 'custcol_celigo_etail_order_line_id';
+    const TYPE_FIELD = 'custcol_item_parentcomp';
+    const PARENT_FIELD = 'custcol_parent_item';
+
+    const TYPE_PARENT = '1';
+    const TYPE_FILLER = '5';
 
 
     const getInputData = () => {
@@ -29,31 +31,41 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             }
         });
 
-        log.audit('CELIGO RESPONSE', {
-            code: res.code,
-            body: res.body
-        });
-
         if (Number(res.code) !== 200)
             throw `Celigo API Error ${res.code}: ${res.body}`;
 
         const body = JSON.parse(res.body);
         const errors = body.errors || [];
 
+
         const matched = errors.filter(e => {
-            const raw = JSON.stringify(e);
 
-            return raw.includes(SHOPIFY_ORDER_ID) &&
-                   raw.includes(ERROR_TEXT);
+            const source = String(e.source || '');
+            const code = String(e.code || '');
+            const msg = String(e.message || '').toLowerCase();
+
+            const sourceMatch =
+                source === 'post_submit_hook_ss';
+
+            const codeMatch =
+                code === 'cannot_update_lines' ||
+                code === 'user_error';
+
+            const messageMatch =
+                msg.includes('items on this line have been fulfilled') ||
+                msg.includes('fulfillment process is already initiated/in progress');
+
+            return sourceMatch && codeMatch && messageMatch;
         });
 
-        log.audit('MATCHED TEST ERROR', {
-            count: matched.length,
-            error: matched[0] || 'NONE'
+
+        log.audit('DRY RUN - ERROR SUMMARY', {
+            totalCeligoErrors: errors.length,
+            matchingErrors: matched.length
         });
 
-        // ONLY PROCESS ONE ERROR
-        return matched.slice(0, 1);
+
+        return matched;
     };
 
 
@@ -62,46 +74,46 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
         try {
 
             const err = JSON.parse(context.value);
-            const raw = JSON.stringify(err);
+
+            const source = String(err.source || '');
+            const code = String(err.code || '');
+            const msg = String(err.message || '').toLowerCase();
 
 
-            /*
-             * SECOND SAFETY CHECK
-             */
+            // SECOND SAFETY CHECK
             if (
-                !raw.includes(SHOPIFY_ORDER_ID) ||
-                !raw.includes(ERROR_TEXT)
-            ) {
-                log.audit('SKIPPED', 'Not the hardcoded production test error');
-                return;
-            }
+                source !== 'post_submit_hook_ss' ||
+                !(
+                    code === 'cannot_update_lines' ||
+                    code === 'user_error'
+                ) ||
+                !(
+                    msg.includes('items on this line have been fulfilled') ||
+                    msg.includes('fulfillment process is already initiated/in progress')
+                )
+            ) return;
 
 
-            log.audit('MATCHED ERROR', {
+            log.audit('DRY RUN - PROCESSING ERROR', {
                 errorId: err.errorId,
-                retryDataKey: err.retryDataKey,
                 traceKey: err.traceKey,
+                code: err.code,
+                retryDataKey: err.retryDataKey,
                 message: err.message
             });
 
 
-            /*
-             * GET RETRY DATA KEY FROM CELIGO ERROR
-             */
-            const retryDataKey = err.retryDataKey;
-
-
-            if (!retryDataKey) {
-                log.error('NO RETRY DATA KEY', err);
+            if (!err.retryDataKey) {
+                log.error('DRY RUN - NO RETRY DATA KEY', err);
                 return;
             }
 
 
             /*
-             * GET ACTUAL FAILED SHOPIFY PAYLOAD
+             * GET CELIGO RETRY PAYLOAD
              */
             const retryRes = https.get({
-                url: `https://api.integrator.io/v1/flows/${FLOW_ID}/${STEP_ID}/${retryDataKey}/data`,
+                url: `https://api.integrator.io/v1/flows/${FLOW_ID}/${STEP_ID}/${err.retryDataKey}/data`,
                 headers: {
                     Authorization: `Bearer ${CELIGO_TOKEN}`,
                     Accept: 'application/json'
@@ -109,14 +121,8 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             });
 
 
-            log.audit('RETRY DATA RESPONSE', {
-                code: retryRes.code,
-                body: retryRes.body
-            });
-
-
             if (Number(retryRes.code) !== 200) {
-                log.error('RETRY DATA API ERROR', {
+                log.error('DRY RUN - RETRY DATA ERROR', {
                     code: retryRes.code,
                     body: retryRes.body
                 });
@@ -124,36 +130,21 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             }
 
 
-            /*
-             * CELIGO RESPONSE:
-             *
-             * {
-             *    data: { SHOPIFY PAYLOAD },
-             *    stage: "...",
-             *    traceKey: "..."
-             * }
-             */
             const retryBody = JSON.parse(retryRes.body);
 
             let payload = retryBody.data || retryBody;
 
 
-            /*
-             * SOMETIMES DATA MAY BE STRINGIFIED
-             */
             if (typeof payload === 'string') {
                 try {
                     payload = JSON.parse(payload);
                 } catch (e) {
-                    log.error('INVALID PAYLOAD JSON', payload);
+                    log.error('DRY RUN - INVALID PAYLOAD', payload);
                     return;
                 }
             }
 
 
-            /*
-             * SOME CELIGO PAYLOADS CAN HAVE RECORD WRAPPER
-             */
             if (
                 payload &&
                 !Array.isArray(payload.line_items) &&
@@ -163,17 +154,10 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             }
 
 
-            /*
-             * SAFETY - DO NOT TOUCH NETSUITE
-             * UNLESS SHOPIFY LINE ITEMS ARE FOUND
-             */
             if (!payload || !Array.isArray(payload.line_items)) {
-
-                log.error('SHOPIFY PAYLOAD NOT FOUND', {
-                    retryDataKey: retryDataKey,
-                    retryBody: retryBody
+                log.error('DRY RUN - SHOPIFY PAYLOAD NOT FOUND', {
+                    errorId: err.errorId
                 });
-
                 return;
             }
 
@@ -181,30 +165,16 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             const orderId = String(payload.id || '');
 
 
-            /*
-             * MAKE SURE IT IS OUR TEST ORDER
-             */
-            if (orderId !== SHOPIFY_ORDER_ID) {
-
-                log.audit('SKIPPED ORDER', {
-                    expected: SHOPIFY_ORDER_ID,
-                    received: orderId
+            if (!orderId) {
+                log.error('DRY RUN - SHOPIFY ORDER ID MISSING', {
+                    errorId: err.errorId
                 });
-
                 return;
             }
 
 
-            log.audit('PAYLOAD FOUND', {
-                orderId: orderId,
-                orderName: payload.name,
-                fulfillmentStatus: payload.fulfillment_status,
-                lineCount: payload.line_items.length
-            });
-
-
             /*
-             * FIND NETSUITE SALES ORDER
+             * FIND EXISTING NETSUITE SO
              */
             let soId;
 
@@ -225,18 +195,12 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
             if (!soId) {
 
-                log.error('SALES ORDER NOT FOUND', {
+                log.audit('DRY RUN - SKIP NO EXISTING SO', {
                     shopifyOrderId: orderId
                 });
 
                 return;
             }
-
-
-            log.audit('SALES ORDER FOUND', {
-                salesOrderId: soId,
-                shopifyOrderId: orderId
-            });
 
 
             const so = record.load({
@@ -246,27 +210,26 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
             });
 
 
-            /*
-             * SHOPIFY LINE MAP
-             *
-             * Shopify line_items[].id
-             * =
-             * NetSuite eTail Order Line ID
-             */
             const shop = {};
 
-            payload.line_items.forEach(x => {
-                shop[String(x.id)] = x;
+            payload.line_items.forEach(s => {
+                shop[String(s.id)] = s;
             });
 
 
             const existing = {};
 
+            let removeCount = 0;
+            let fillerRemoveCount = 0;
+            let addCount = 0;
+            let updateCount = 0;
+            let fulfilledSkipCount = 0;
+            let automationSkipCount = 0;
+            let missingItemCount = 0;
+
 
             /*
-             * CHECK CURRENT NETSUITE LINES
-             *
-             * BACKWARDS BECAUSE LINES MAY BE REMOVED
+             * CHECK EXISTING NETSUITE LINES
              */
             for (
                 let i = so.getLineCount({ sublistId: 'item' }) - 1;
@@ -284,17 +247,11 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * BLANK ETAIL LINE ID
-                 *
-                 * CREATED BY NETSUITE AUTOMATION
-                 * DO NOT TOUCH
+                 * NETSUITE AUTOMATION LINE
+                 * IGNORE, EXCEPT FILLER CHECK BELOW
                  */
                 if (!lineId) {
-
-                    log.debug('SKIP NETSUITE AUTOMATION LINE', {
-                        line: i
-                    });
-
+                    automationSkipCount++;
                     continue;
                 }
 
@@ -303,19 +260,16 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
                 const s = shop[lineId];
 
+                if (!s) continue;
 
-                /*
-                 * NOT PRESENT IN SHOPIFY PAYLOAD
-                 * LEAVE IT ALONE
-                 */
-                if (!s) {
 
-                    log.debug('SHOPIFY LINE NOT FOUND - KEEP', {
-                        lineId: lineId
-                    });
-
-                    continue;
-                }
+                const itemId = String(
+                    so.getSublistValue({
+                        sublistId: 'item',
+                        fieldId: 'item',
+                        line: i
+                    }) || ''
+                );
 
 
                 const itemText = so.getSublistText({
@@ -343,23 +297,31 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                 );
 
 
+                const lineType = String(
+                    so.getSublistValue({
+                        sublistId: 'item',
+                        fieldId: TYPE_FIELD,
+                        line: i
+                    }) || ''
+                );
+
+
                 /*
                  * SHOPIFY REMOVED ITEM
-                 *
-                 * current_quantity = 0
                  */
                 if (Number(s.current_quantity) === 0) {
 
 
-                    /*
-                     * NEVER REMOVE ALREADY FULFILLED ITEM
-                     */
                     if (
                         fulfilled > 0 ||
                         s.fulfillment_status === 'fulfilled'
                     ) {
 
-                        log.audit('SKIP REMOVAL - FULFILLED', {
+                        fulfilledSkipCount++;
+
+
+                        log.audit('DRY RUN - WOULD SKIP FULFILLED REMOVAL', {
+                            salesOrderId: soId,
                             item: itemText,
                             sku: s.sku,
                             lineId: lineId,
@@ -370,16 +332,107 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                     }
 
 
-                    so.removeLine({
-                        sublistId: 'item',
-                        line: i
-                    });
+                    /*
+                     * IF REMOVED ITEM IS PARENT,
+                     * FIND RELATED FILLER
+                     */
+                    if (lineType === TYPE_PARENT) {
+
+                        for (
+                            let f = so.getLineCount({ sublistId: 'item' }) - 1;
+                            f >= 0;
+                            f--
+                        ) {
+
+                            if (f === i) continue;
 
 
-                    log.audit('REMOVED', {
+                            const fillerType = String(
+                                so.getSublistValue({
+                                    sublistId: 'item',
+                                    fieldId: TYPE_FIELD,
+                                    line: f
+                                }) || ''
+                            );
+
+
+                            const fillerParent = String(
+                                so.getSublistValue({
+                                    sublistId: 'item',
+                                    fieldId: PARENT_FIELD,
+                                    line: f
+                                }) || ''
+                            );
+
+
+                            const fillerQty = Number(
+                                so.getSublistValue({
+                                    sublistId: 'item',
+                                    fieldId: 'quantity',
+                                    line: f
+                                }) || 0
+                            );
+
+
+                            if (
+                                fillerType === TYPE_FILLER &&
+                                fillerParent === itemId &&
+                                fillerQty === qty
+                            ) {
+
+                                const fillerItem = so.getSublistText({
+                                    sublistId: 'item',
+                                    fieldId: 'item',
+                                    line: f
+                                });
+
+
+                                const fillerFulfilled = Number(
+                                    so.getSublistValue({
+                                        sublistId: 'item',
+                                        fieldId: 'quantityfulfilled',
+                                        line: f
+                                    }) || 0
+                                );
+
+
+                                if (fillerFulfilled > 0) {
+
+                                    log.audit('DRY RUN - WOULD SKIP FULFILLED FILLER', {
+                                        salesOrderId: soId,
+                                        parent: itemText,
+                                        filler: fillerItem
+                                    });
+
+                                    continue;
+                                }
+
+
+                                fillerRemoveCount++;
+
+
+                                log.audit('DRY RUN - WOULD REMOVE FILLER', {
+                                    salesOrderId: soId,
+                                    parent: itemText,
+                                    parentItemId: itemId,
+                                    filler: fillerItem,
+                                    quantity: fillerQty
+                                });
+                            }
+                        }
+                    }
+
+
+                    removeCount++;
+
+
+                    log.audit('DRY RUN - WOULD REMOVE', {
+                        salesOrderId: soId,
                         item: itemText,
                         sku: s.sku,
-                        lineId: lineId
+                        lineId: lineId,
+                        type: lineType,
+                        quantity: qty
                     });
 
 
@@ -388,16 +441,18 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * EXISTING FULFILLED LINE
-                 *
-                 * DO NOT TOUCH ITEM / QTY / PRICE
+                 * DO NOT MODIFY FULFILLED LINES
                  */
                 if (
                     fulfilled > 0 ||
                     s.fulfillment_status === 'fulfilled'
                 ) {
 
-                    log.audit('SKIP FULFILLED', {
+                    fulfilledSkipCount++;
+
+
+                    log.audit('DRY RUN - WOULD SKIP FULFILLED', {
+                        salesOrderId: soId,
                         item: itemText,
                         sku: s.sku,
                         lineId: lineId,
@@ -409,66 +464,52 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
                 /*
-                 * UPDATE QUANTITY
+                 * WOULD UPDATE QUANTITY
                  */
                 const shopQty = Number(s.current_quantity);
 
 
                 if (qty !== shopQty) {
 
-                    so.setSublistValue({
-                        sublistId: 'item',
-                        fieldId: 'quantity',
-                        line: i,
-                        value: shopQty
-                    });
+                    updateCount++;
 
 
-                    log.audit('QUANTITY UPDATED', {
+                    log.audit('DRY RUN - WOULD UPDATE QTY', {
+                        salesOrderId: soId,
                         item: itemText,
                         sku: s.sku,
                         lineId: lineId,
-                        oldQty: qty,
-                        newQty: shopQty
+                        netSuiteQty: qty,
+                        shopifyQty: shopQty
                     });
                 }
             }
 
 
             /*
-             * ADD NEW SHOPIFY ITEMS
+             * CHECK NEW SHOPIFY ITEMS
              */
             payload.line_items.forEach(s => {
 
                 const lineId = String(s.id || '');
 
 
-                /*
-                 * ALREADY EXISTS IN NETSUITE
-                 */
                 if (existing[lineId]) return;
 
-
-                /*
-                 * REMOVED SHOPIFY LINE
-                 */
                 if (Number(s.current_quantity) <= 0) return;
 
-
-                /*
-                 * ALREADY FULFILLED SHOPIFY LINE
-                 */
                 if (s.fulfillment_status === 'fulfilled') return;
 
 
-                /*
-                 * SKU REQUIRED
-                 */
                 if (!s.sku) {
 
-                    log.error('NEW ITEM HAS NO SKU', {
+                    missingItemCount++;
+
+
+                    log.error('DRY RUN - NEW ITEM HAS NO SKU', {
+                        salesOrderId: soId,
                         lineId: lineId,
-                        item: s
+                        item: s.name
                     });
 
                     return;
@@ -478,9 +519,6 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                 let itemId;
 
 
-                /*
-                 * FIND NETSUITE ITEM BY SKU
-                 */
                 search.create({
                     type: search.Type.ITEM,
                     filters: [
@@ -497,7 +535,11 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
                 if (!itemId) {
 
-                    log.error('ITEM NOT FOUND', {
+                    missingItemCount++;
+
+
+                    log.error('DRY RUN - ITEM NOT FOUND', {
+                        salesOrderId: soId,
                         sku: s.sku,
                         lineId: lineId
                     });
@@ -506,71 +548,11 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
                 }
 
 
-                const line = so.getLineCount({
-                    sublistId: 'item'
-                });
+                addCount++;
 
 
-                /*
-                 * ADD ITEM
-                 */
-                so.setSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'item',
-                    line: line,
-                    value: Number(itemId)
-                });
-
-
-                /*
-                 * ADD QUANTITY
-                 */
-                so.setSublistValue({
-                    sublistId: 'item',
-                    fieldId: 'quantity',
-                    line: line,
-                    value: Number(s.current_quantity)
-                });
-
-
-                /*
-                 * ADD ETAIL / SHOPIFY LINE ID
-                 */
-                so.setSublistValue({
-                    sublistId: 'item',
-                    fieldId: LINE_ID_FIELD,
-                    line: line,
-                    value: lineId
-                });
-
-
-                /*
-                 * SET SHOPIFY PRICE
-                 */
-                if (
-                    s.price !== undefined &&
-                    s.price !== null &&
-                    s.price !== ''
-                ) {
-
-                    so.setSublistValue({
-                        sublistId: 'item',
-                        fieldId: 'price',
-                        line: line,
-                        value: -1
-                    });
-
-
-                    so.setSublistValue({
-                        sublistId: 'item',
-                        fieldId: 'rate',
-                        line: line,
-                        value: Number(s.price)
-                    });
-                }
-
-
-                log.audit('ADDED', {
+                log.audit('DRY RUN - WOULD ADD', {
+                    salesOrderId: soId,
                     item: s.name,
                     sku: s.sku,
                     itemId: itemId,
@@ -582,25 +564,42 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
 
             /*
-             * SAVE SALES ORDER
+             * ORDER LEVEL SUMMARY
              */
-            const savedId = so.save({
-                enableSourcing: true,
-                ignoreMandatoryFields: false
-            });
-
-
-            log.audit('SALES ORDER UPDATED', {
-                salesOrderId: savedId,
+            log.audit('DRY RUN - ORDER SUMMARY', {
                 shopifyOrderId: orderId,
-                errorId: err.errorId,
-                retryDataKey: retryDataKey
+                salesOrderId: soId,
+
+                needsChange:
+                    removeCount > 0 ||
+                    fillerRemoveCount > 0 ||
+                    addCount > 0 ||
+                    updateCount > 0,
+
+                wouldRemove: removeCount,
+                wouldRemoveFillers: fillerRemoveCount,
+                wouldAdd: addCount,
+                wouldUpdateQty: updateCount,
+
+                fulfilledLinesSkipped: fulfilledSkipCount,
+                automationLinesSkipped: automationSkipCount,
+                missingItems: missingItemCount,
+
+                recordSaved: false
             });
 
+
+            /*
+             * DRY RUN ONLY
+             *
+             * NO removeLine()
+             * NO setSublistValue()
+             * NO save()
+             */
 
         } catch (e) {
 
-            log.error('MAP ERROR', {
+            log.error('DRY RUN - MAP ERROR', {
                 name: e.name,
                 message: e.message || String(e),
                 stack: e.stack
@@ -611,16 +610,17 @@ define(['N/https', 'N/search', 'N/record', 'N/log'],
 
     const summarize = summary => {
 
-        log.audit('SUMMARY', {
+        log.audit('DRY RUN - COMPLETE', {
             usage: summary.usage,
             yields: summary.yields,
-            concurrency: summary.concurrency
+            concurrency: summary.concurrency,
+            salesOrdersChanged: 0
         });
 
 
         summary.mapSummary.errors.iterator().each((key, error) => {
 
-            log.error('MAP SUMMARY ERROR', {
+            log.error('DRY RUN - SUMMARY ERROR', {
                 key: key,
                 error: error
             });
