@@ -14,7 +14,6 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
     var TYPE_OFF_BIKE = '4';
 
     // Item fields
-    var ITEM_CATEGORY_FIELD = 'custitem_item_category';
     var ALSO_CATEGORY_FIELD = 'custitem_also_category';
     var MERCH_FIELD = 'custitem_merch_item';
 
@@ -159,11 +158,10 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
                 search.create({
                     type: search.Type.ITEM,
                     filters: [['internalid', 'anyof', itemIds]],
-                    columns: ['internalid', ITEM_CATEGORY_FIELD, ALSO_CATEGORY_FIELD, MERCH_FIELD]
+                    columns: ['internalid', ALSO_CATEGORY_FIELD, MERCH_FIELD]
                 }).run().each(function (r) {
 
                     itemData[String(r.id)] = {
-                        itemCategory: String(r.getValue(ITEM_CATEGORY_FIELD) || ''),
                         category: String(r.getValue(ALSO_CATEGORY_FIELD) || ''),
                         merch: r.getValue(MERCH_FIELD) === true || r.getValue(MERCH_FIELD) === 'T'
                     };
@@ -215,7 +213,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
                     var item = itemData[line.itemId];
                     if (!item) continue;
 
-                    itemCategory = item.itemCategory;
+                    itemCategory = line.type;
                     category = item.category;
                     merch = item.merch;
 
