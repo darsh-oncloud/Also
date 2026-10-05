@@ -645,6 +645,8 @@ define(['N/search', 'N/record', 'N/log', 'N/runtime'], function (search, record,
             return result;
         }
 
+        if (grp.componentLines.filter(function(line) { return line.parentComp === PC_COMPONENT; }).length !== 3) return result;
+
         var parentQty = Number(grp.parentLines[0].qty || 0);
         var minCommitted = null;
         var minAvailable = null;
