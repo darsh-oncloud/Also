@@ -143,7 +143,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
                 lines.push({ itemId: itemId, type: type, qty: qty });
 
                 // Parent doesn't need Item lookup; Off-Bike does
-                if (type === TYPE_OFF_BIKE || type === TYPE_ON_BIKE && itemIds.indexOf(itemId) === -1) itemIds.push(itemId);
+                if ((type === TYPE_OFF_BIKE || type === TYPE_ON_BIKE) && itemIds.indexOf(itemId) === -1) itemIds.push(itemId);
             }
 
             if (!lines.length) {
@@ -210,7 +210,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
 
 
                 // Off-Bike = match Item Category + Category + Merch
-                if (line.type ===  || line.type === TYPE_ON_BIKE) {
+                if (line.type === TYPE_OFF_BIKE || line.type === TYPE_ON_BIKE) {
                     var item = itemData[line.itemId];
                     if (!item) continue;
 
