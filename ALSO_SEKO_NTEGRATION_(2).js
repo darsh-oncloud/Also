@@ -4,19 +4,6 @@
  */
 define(['N/search','N/record','N/log'], (search, record, log) => {
 
-    const SKIP = [
-        'item','line','lineuniquekey','linenumber','id','sys_id','sys_parentid',
-        'itemtype','itemsubtype','isnoninventory','olditemid','item_display',
-        'amount','grossamt','tax1amt','taxrate1',
-        'quantitycommitted','quantityfulfilled','quantitybilled',
-        'quantityshiprecv','quantityavailable','quantityonhand',
-        'quantitybackordered','backordered','commitinventory',
-        'commitmentfirm','oldcommitmentfirm','inventorydetailavail',
-        'linked','discline','orderdoc','orderline','islinefulfilled',
-        'itempicked','itempacked','createdpo','origquantity',
-        'initquantity','origlocation','origunits'
-    ];
-
     const getInputData = () => search.create({
         type:'salesorder',
         filters:[
@@ -25,54 +12,28 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
             ['taxline','is','F'],'AND',
             ['item.type','anyof','InvtPart'],'AND',
             ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END','equalto','1'],'AND',
-            ['internalidnumber','equalto','1049053']
+            ['internalidnumber','equalto','1049144']
         ],
         columns:[
-            'internalid',
-            'lineuniquekey',
-            search.createColumn({name:'internalid',join:'item'})
+            search.createColumn({name:'lineuniquekey'}),
+            search.createColumn({
+                name:'internalid',
+                join:'item'
+            })
         ]
     });
 
-    const getValues = (rec, line) => {
-        const values = {};
-
-        rec.getSublistFields({sublistId:'item'}).forEach(field => {
-            if(SKIP.includes(field)) return;
-
-            try{
-                values[field] = rec.getSublistValue({
-                    sublistId:'item',
-                    fieldId:field,
-                    line
-                });
-            }catch(e){}
-        });
-
-        return values;
-    };
-
-    const restoreValues = (rec, line, values) => {
-        Object.keys(values).forEach(field => {
-            try{
-                rec.setSublistValue({
-                    sublistId:'item',
-                    fieldId:field,
-                    line,
-                    value:values[field]
-                });
-            }catch(e){}
-        });
-    };
-
     const map = context => {
-        try{
+        try {
+
             const r = JSON.parse(context.value);
 
             const soId = r.id;
+
             const x = r.values['internalid.item'];
             const itemId = Number(x?.value || x);
-            const oldKey = String(r.values.lineuniquekey || '');
+
+            const lineKey = String(r.values.lineuniquekey || '');
 
             const so = record.load({
                 type:record.Type.SALES_ORDER,
@@ -80,101 +41,70 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                 isDynamic:false
             });
 
-            // Find exact affected line
+
+            // Find exact existing line
             let line = -1;
 
-            for(let i=0; i<so.getLineCount({sublistId:'item'}); i++){
-                const key = String(so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'lineuniquekey',
-                    line:i
-                }) || '');
+            for(let i = 0; i < so.getLineCount({sublistId:'item'}); i++){
 
-                if(key === oldKey){
+                const key = String(
+                    so.getSublistValue({
+                        sublistId:'item',
+                        fieldId:'lineuniquekey',
+                        line:i
+                    }) || ''
+                );
+
+                if(key === lineKey){
                     line = i;
                     break;
                 }
             }
 
+
             if(line < 0){
-                log.error('Line Not Found',{soId,oldKey});
+                log.error('Line Not Found',{soId,lineKey});
                 return;
             }
 
-            const itemValues = getValues(so,line);
 
-            /*
-             * Capture discount immediately below affected item.
-             * Your test order has Promotional Discount below item.
-             */
-            let discount = null;
-
-            if(line + 1 < so.getLineCount({sublistId:'item'})){
-
-                const nextType = String(so.getSublistValue({
+            log.audit('Before',{
+                line,
+                item:so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'item',
+                    line
+                }),
+                itemType:so.getSublistValue({
                     sublistId:'item',
                     fieldId:'itemtype',
-                    line:line + 1
-                }) || '');
-
-                if(nextType === 'Discount' || nextType === 'Markup'){
-
-                    discount = {
-                        line: line + 1,
-
-                        item: so.getSublistValue({
-                            sublistId:'item',
-                            fieldId:'item',
-                            line:line + 1
-                        }),
-
-                        values: getValues(so,line + 1)
-                    };
-                }
-            }
-
-            log.audit('Captured',{
-                soId,
-                line,
-                itemId,
-                hasDiscount:!!discount
+                    line
+                }),
+                lineKey
             });
 
 
-            // --------------------------------------------------
-            // REMOVE DEPENDENT DISCOUNT FIRST
-            // --------------------------------------------------
-
-            if(discount){
-                so.removeLine({
-                    sublistId:'item',
-                    line:discount.line,
-                    ignoreRecalc:true
-                });
-            }
-
-
-            // --------------------------------------------------
-            // REMOVE OLD ITEM LINE
-            // --------------------------------------------------
-
-            so.removeLine({
+            /*
+             * SAME LINE
+             * Clear item first
+             */
+            so.setSublistValue({
                 sublistId:'item',
+                fieldId:'item',
                 line,
-                ignoreRecalc:true
+                value:''
             });
 
 
-            // --------------------------------------------------
-            // INSERT NEW ITEM AT EXACT SAME POSITION
-            // --------------------------------------------------
-
-            so.insertLine({
-                sublistId:'item',
-                line,
-                ignoreRecalc:true
+            log.debug('Item Cleared',{
+                line
             });
 
+
+            /*
+             * SAME LINE
+             * Enter SAME item again
+             */
             so.setSublistValue({
                 sublistId:'item',
                 fieldId:'item',
@@ -182,34 +112,11 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                 value:itemId
             });
 
-            restoreValues(so,line,itemValues);
 
-
-            // --------------------------------------------------
-            // PUT DISCOUNT BACK DIRECTLY UNDER ITEM
-            // --------------------------------------------------
-
-            if(discount){
-
-                so.insertLine({
-                    sublistId:'item',
-                    line:line + 1,
-                    ignoreRecalc:true
-                });
-
-                so.setSublistValue({
-                    sublistId:'item',
-                    fieldId:'item',
-                    line:line + 1,
-                    value:discount.item
-                });
-
-                restoreValues(
-                    so,
-                    line + 1,
-                    discount.values
-                );
-            }
+            log.debug('Item Re-entered',{
+                line,
+                itemId
+            });
 
 
             log.audit('Before Save',{
@@ -224,19 +131,9 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                     fieldId:'itemtype',
                     line
                 }),
-                quantity:so.getSublistValue({
+                lineUniqueKey:so.getSublistValue({
                     sublistId:'item',
-                    fieldId:'quantity',
-                    line
-                }),
-                rate:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'rate',
-                    line
-                }),
-                location:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'location',
+                    fieldId:'lineuniquekey',
                     line
                 })
             });
@@ -250,10 +147,11 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
             log.audit('SUCCESS',{
                 soId:savedId,
+                line,
                 itemId,
-                position:line,
-                discountRestored:!!discount
+                lineKey
             });
+
 
         }catch(e){
 
@@ -265,5 +163,10 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
         }
     };
 
-    return {getInputData,map};
+
+    return {
+        getInputData,
+        map
+    };
+
 });
