@@ -28,7 +28,7 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
             ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END','equalto','1'],'AND',
 
             // TEST ORDER
-            ['internalidnumber','equalto','1049053']
+            ['internalidnumber','equalto','1049144']
         ],
         columns:[
             'internalid',
