@@ -2,19 +2,33 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/search','N/record','N/log'], (search, record, log) => {
+define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
+    // Do NOT copy these fields from old line.
+    // NetSuite must recreate/recalculate them.
     const SKIP_FIELDS = [
         'item',
         'line',
         'lineuniquekey',
+        'linenumber',
+        'sys_id',
+        'sys_parentid',
+        'id',
 
-        // NetSuite calculated / system fields
+        // Old item type/system identity
+        'itemtype',
+        'itemsubtype',
+        'isnoninventory',
+        'olditemid',
+        'item_display',
+
+        // Calculated amounts
         'amount',
         'grossamt',
         'tax1amt',
         'taxrate1',
-        'taxcode_display',
+
+        // Inventory/commitment
         'quantitycommitted',
         'quantityfulfilled',
         'quantitybilled',
@@ -22,29 +36,55 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
         'quantityavailable',
         'quantityonhand',
         'quantitybackordered',
+        'backordered',
         'commitinventory',
+        'commitmentfirm',
+        'oldcommitmentfirm',
+        'inventorydetailavail',
 
-        // System relationship fields
+        // Internal linkage
+        'linked',
+        'discline',
         'orderdoc',
-        'orderline'
+        'orderline',
+        'islinefulfilled',
+        'itempicked',
+        'itempacked',
+        'createdpo',
+
+        // Internal/system sourcing
+        'origquantity',
+        'initquantity',
+        'origlocation',
+        'origunits',
+        'price_display',
+        'pricelevels',
+        'unitslist',
+        'binitem',
+        'locationusesbins',
+        'onorder',
+        'weightinlb',
+        'isposting'
     ];
 
+
     const getInputData = () => {
+
         return search.create({
             type: 'salesorder',
             settings: [
-                {name:'consolidationtype', value:'ACCTTYPE'}
+                { name: 'consolidationtype', value: 'ACCTTYPE' }
             ],
             filters: [
-                ['type','anyof','SalesOrd'],
+                ['type', 'anyof', 'SalesOrd'],
                 'AND',
-                ['mainline','is','F'],
+                ['mainline', 'is', 'F'],
                 'AND',
-                ['shipping','is','F'],
+                ['shipping', 'is', 'F'],
                 'AND',
-                ['taxline','is','F'],
+                ['taxline', 'is', 'F'],
                 'AND',
-                ['status','anyof',
+                ['status', 'anyof',
                     'SalesOrd:A',
                     'SalesOrd:D',
                     'SalesOrd:F',
@@ -52,24 +92,23 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                     'SalesOrd:B'
                 ],
                 'AND',
-                ['item.type','anyof','InvtPart'],
+                ['item.type', 'anyof', 'InvtPart'],
                 'AND',
-                ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END','equalto','1'],
+                ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END', 'equalto', '1'],
                 'AND',
-                ['internalidnumber','equalto','1049053']
+
+                // TEST ONLY
+                ['internalidnumber', 'equalto', '1049053']
             ],
             columns: [
-                search.createColumn({name:'internalid'}),
-                search.createColumn({name:'tranid'}),
-                search.createColumn({name:'item'}),
-                search.createColumn({name:'quantity'}),
-                search.createColumn({name:'quantitycommitted'}),
-                search.createColumn({name:'quantityshiprecv'}),
-                search.createColumn({name:'line'}),
-                search.createColumn({name:'lineuniquekey'}),
+                search.createColumn({ name: 'internalid' }),
+                search.createColumn({ name: 'tranid' }),
+                search.createColumn({ name: 'item' }),
+                search.createColumn({ name: 'line' }),
+                search.createColumn({ name: 'lineuniquekey' }),
                 search.createColumn({
-                    name:'internalid',
-                    join:'item'
+                    name: 'internalid',
+                    join: 'item'
                 })
             ]
         });
@@ -77,22 +116,29 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
 
     const map = context => {
+
         try {
+
             const result = JSON.parse(context.value);
 
             const soId = result.id;
-            const itemId = result.values['internalid.item'].value;
-            const lineUniqueKey = result.values.lineuniquekey;
-            const lineId = result.values.line;
 
-            log.debug('Processing', {
+            const itemResult = result.values['internalid.item'];
+            const itemId = itemResult && itemResult.value
+                ? itemResult.value
+                : itemResult;
+
+            const oldLineKey = String(result.values.lineuniquekey || '');
+
+
+            log.audit('Processing', {
                 soId,
                 itemId,
-                lineId,
-                lineUniqueKey
+                oldLineKey
             });
 
 
+            // IMPORTANT: STANDARD / NON-DYNAMIC MODE
             const so = record.load({
                 type: record.Type.SALES_ORDER,
                 id: soId,
@@ -100,220 +146,268 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
             });
 
 
-            /* ---------------------------------------------------------
-             * FIND EXACT OLD LINE
-             * --------------------------------------------------------- */
+            // ----------------------------------------------------
+            // FIND EXACT OLD LINE
+            // ----------------------------------------------------
 
             let targetLine = -1;
 
-            const count = so.getLineCount({
-                sublistId:'item'
+            const lineCount = so.getLineCount({
+                sublistId: 'item'
             });
 
-            for(let i = 0; i < count; i++){
+
+            for (let i = 0; i < lineCount; i++) {
 
                 const key = String(
                     so.getSublistValue({
-                        sublistId:'item',
-                        fieldId:'lineuniquekey',
-                        line:i
+                        sublistId: 'item',
+                        fieldId: 'lineuniquekey',
+                        line: i
                     }) || ''
                 );
 
-                if(key === String(lineUniqueKey)){
+                if (key === oldLineKey) {
                     targetLine = i;
                     break;
                 }
             }
 
 
-            if(targetLine === -1){
+            if (targetLine === -1) {
+
                 log.error('Line Not Found', {
                     soId,
                     itemId,
-                    lineUniqueKey
+                    oldLineKey
                 });
+
                 return;
             }
 
 
-            /* ---------------------------------------------------------
-             * SAFETY CHECKS
-             * --------------------------------------------------------- */
+            // ----------------------------------------------------
+            // SAFETY
+            // ----------------------------------------------------
 
             const fulfilled = Number(
                 so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'quantityfulfilled',
-                    line:targetLine
+                    sublistId: 'item',
+                    fieldId: 'quantityfulfilled',
+                    line: targetLine
                 }) || 0
             );
+
 
             const billed = Number(
                 so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'quantitybilled',
-                    line:targetLine
+                    sublistId: 'item',
+                    fieldId: 'quantitybilled',
+                    line: targetLine
                 }) || 0
             );
 
 
-            if(fulfilled > 0 || billed > 0){
-                log.error('Skipped - Fulfilled/Billed Line', {
+            if (fulfilled > 0 || billed > 0) {
+
+                log.error('SKIPPED - Fulfilled/Billed', {
                     soId,
                     targetLine,
                     fulfilled,
                     billed
                 });
+
                 return;
             }
 
 
-            /* ---------------------------------------------------------
-             * GET EVERY FIELD CURRENTLY AVAILABLE ON THE LINE
-             * --------------------------------------------------------- */
+            // ----------------------------------------------------
+            // CAPTURE OLD LINE VALUES
+            // ----------------------------------------------------
 
             const fields = so.getSublistFields({
-                sublistId:'item'
+                sublistId: 'item'
             });
 
-            const values = {};
+            const oldValues = {};
 
 
             fields.forEach(fieldId => {
 
-                if(SKIP_FIELDS.includes(fieldId))
+                if (SKIP_FIELDS.includes(fieldId))
                     return;
 
                 try {
-                    values[fieldId] = so.getSublistValue({
-                        sublistId:'item',
+
+                    oldValues[fieldId] = so.getSublistValue({
+                        sublistId: 'item',
                         fieldId,
-                        line:targetLine
+                        line: targetLine
                     });
-                }
-                catch(e){}
+
+                } catch (e) {}
             });
 
 
-            log.debug('Old Line Values', {
+            log.debug('Old Line Captured', {
                 targetLine,
                 itemId,
-                values
+                fieldCount: Object.keys(oldValues).length,
+                oldValues
             });
 
 
-            /* ---------------------------------------------------------
-             * REMOVE OLD LINE
-             * --------------------------------------------------------- */
+            // ----------------------------------------------------
+            // REMOVE OLD LINE
+            // ----------------------------------------------------
 
             so.removeLine({
-                sublistId:'item',
-                line:targetLine,
-                ignoreRecalc:true
+                sublistId: 'item',
+                line: targetLine,
+                ignoreRecalc: true
             });
 
 
-            /* ---------------------------------------------------------
-             * INSERT NEW LINE AT SAME POSITION
-             * --------------------------------------------------------- */
+            // ----------------------------------------------------
+            // INSERT NEW LINE AT EXACT SAME POSITION
+            // ----------------------------------------------------
 
             so.insertLine({
-                sublistId:'item',
-                line:targetLine,
-                ignoreRecalc:true
+                sublistId: 'item',
+                line: targetLine,
+                ignoreRecalc: true
             });
 
 
-            /*
-             * VERY IMPORTANT:
-             * Item is set first so NetSuite sources it again as the
-             * current Inventory Item.
-             */
+            // ----------------------------------------------------
+            // ADD SAME ITEM AGAIN FIRST
+            // This makes NetSuite source CURRENT Inventory Item
+            // ----------------------------------------------------
+
             so.setSublistValue({
-                sublistId:'item',
-                fieldId:'item',
-                line:targetLine,
-                value:itemId
+                sublistId: 'item',
+                fieldId: 'item',
+                line: targetLine,
+                value: Number(itemId)
             });
 
 
-            /* ---------------------------------------------------------
-             * RESTORE OLD LINE VALUES
-             * --------------------------------------------------------- */
+            log.debug('Item Re-Added', {
+                targetLine,
+                itemId
+            });
+
+
+            // ----------------------------------------------------
+            // RESTORE OLD EDITABLE VALUES
+            // ----------------------------------------------------
 
             const restored = [];
             const skipped = [];
 
 
-            Object.keys(values).forEach(fieldId => {
+            Object.keys(oldValues).forEach(fieldId => {
 
-                const value = values[fieldId];
+                const value = oldValues[fieldId];
 
-                /*
-                 * Do not set undefined values.
-                 * Blank values are intentionally allowed.
-                 */
-                if(value === undefined)
+                if (value === undefined)
                     return;
 
                 try {
 
                     so.setSublistValue({
-                        sublistId:'item',
+                        sublistId: 'item',
                         fieldId,
-                        line:targetLine,
-                        value:value
+                        line: targetLine,
+                        value
                     });
 
                     restored.push(fieldId);
 
-                }
-                catch(e){
+                } catch (e) {
 
                     skipped.push({
                         fieldId,
                         value,
-                        error:e.message
+                        error: e.message
                     });
                 }
-
             });
 
 
             log.debug('Fields Restored', restored);
 
-            if(skipped.length){
-                log.debug('Fields NetSuite Would Not Restore', skipped);
+
+            if (skipped.length) {
+                log.debug('Fields Skipped', skipped);
             }
 
 
-            /* ---------------------------------------------------------
-             * SAVE
-             * --------------------------------------------------------- */
+            // ----------------------------------------------------
+            // VERIFY BEFORE SAVE
+            // ----------------------------------------------------
+
+            log.audit('Before Save', {
+                targetLine,
+
+                item: so.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'item',
+                    line: targetLine
+                }),
+
+                itemType: so.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'itemtype',
+                    line: targetLine
+                }),
+
+                quantity: so.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'quantity',
+                    line: targetLine
+                }),
+
+                rate: so.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'rate',
+                    line: targetLine
+                }),
+
+                location: so.getSublistValue({
+                    sublistId: 'item',
+                    fieldId: 'location',
+                    line: targetLine
+                })
+            });
+
+
+            // ----------------------------------------------------
+            // SAVE
+            // ----------------------------------------------------
 
             const savedId = so.save({
-                enableSourcing:true,
-                ignoreMandatoryFields:false
+                enableSourcing: true,
+                ignoreMandatoryFields: false
             });
 
 
-            log.audit('Sales Order Updated', {
-                soId:savedId,
+            log.audit('SUCCESS - Sales Order Updated', {
+                soId: savedId,
                 itemId,
-                oldLineUniqueKey:lineUniqueKey,
-                sublistPosition:targetLine,
-                restoredFields:restored.length,
-                skippedFields:skipped.length
+                samePosition: targetLine,
+                oldLineUniqueKey: oldLineKey,
+                restoredFields: restored.length,
+                skippedFields: skipped.length
             });
 
 
-        }
-        catch(e){
+        } catch (e) {
 
             log.error('Map Error', {
-                error:e.message,
-                stack:e.stack
+                name: e.name,
+                message: e.message,
+                stack: e.stack
             });
         }
     };
@@ -321,15 +415,16 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
     const summarize = summary => {
 
-        summary.mapSummary.errors.iterator().each((key,error) => {
+        summary.mapSummary.errors.iterator().each((key, error) => {
             log.error(`Map Error ${key}`, error);
             return true;
         });
 
+
         log.audit('Complete', {
-            usage:summary.usage,
-            yields:summary.yields,
-            seconds:summary.seconds
+            usage: summary.usage,
+            yields: summary.yields,
+            seconds: summary.seconds
         });
     };
 
