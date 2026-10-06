@@ -1,119 +1,269 @@
 /**
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
- *
- * Re-adds Sales Order lines whose item was converted from Non-Inventory to Inventory.
- * The old line keeps its old item type forever, so the line is removed and a new line
- * with the same values is inserted at the SAME position. Only the item line is touched;
- * discount/promotion lines are left exactly as they are.
  */
-define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
+define(['N/search','N/record','N/log'], (search, record, log) => {
 
-    // Order matters: price level before rate, rate before amount.
-    const FIELDS = [
-        'quantity', 'units', 'description', 'price', 'rate', 'amount',
-        'location', 'taxcode', 'department', 'class',
-        'expectedshipdate', 'requesteddate', 'isclosed'
+    const SKIP = [
+        'item','line','lineuniquekey','linenumber','id','sys_id','sys_parentid',
+        'itemtype','itemsubtype','isnoninventory','olditemid','item_display',
+        'amount','grossamt','tax1amt','taxrate1',
+        'quantitycommitted','quantityfulfilled','quantitybilled',
+        'quantityshiprecv','quantityavailable','quantityonhand',
+        'quantitybackordered','backordered','commitinventory',
+        'commitmentfirm','oldcommitmentfirm','inventorydetailavail',
+        'linked','discline','orderdoc','orderline','islinefulfilled',
+        'itempicked','itempacked','createdpo','origquantity',
+        'initquantity','origlocation','origunits'
     ];
 
     const getInputData = () => search.create({
-        type: 'salesorder',
-        filters: [
-            ['mainline', 'is', 'F'], 'AND',
-            ['shipping', 'is', 'F'], 'AND',
-            ['taxline', 'is', 'F'], 'AND',
-            ['item.type', 'anyof', 'InvtPart'], 'AND',
-            ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END', 'equalto', '1'], 'AND',
-            ['internalidnumber', 'equalto', '1049053'] // TEST ORDER - remove when ready
+        type:'salesorder',
+        filters:[
+            ['mainline','is','F'],'AND',
+            ['shipping','is','F'],'AND',
+            ['taxline','is','F'],'AND',
+            ['item.type','anyof','InvtPart'],'AND',
+            ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END','equalto','1'],'AND',
+            ['internalidnumber','equalto','1049053']
         ],
-        columns: ['lineuniquekey']
+        columns:[
+            'internalid',
+            'lineuniquekey',
+            search.createColumn({name:'internalid',join:'item'})
+        ]
     });
 
-    // Group all lines by Sales Order so each order is loaded/saved only once
+    const getValues = (rec, line) => {
+        const values = {};
+
+        rec.getSublistFields({sublistId:'item'}).forEach(field => {
+            if(SKIP.includes(field)) return;
+
+            try{
+                values[field] = rec.getSublistValue({
+                    sublistId:'item',
+                    fieldId:field,
+                    line
+                });
+            }catch(e){}
+        });
+
+        return values;
+    };
+
+    const restoreValues = (rec, line, values) => {
+        Object.keys(values).forEach(field => {
+            try{
+                rec.setSublistValue({
+                    sublistId:'item',
+                    fieldId:field,
+                    line,
+                    value:values[field]
+                });
+            }catch(e){}
+        });
+    };
+
     const map = context => {
-        const r = JSON.parse(context.value);
-        context.write({ key: r.id, value: String(r.values.lineuniquekey) });
-    };
+        try{
+            const r = JSON.parse(context.value);
 
-    const readLine = (so, line) => {
-        const data = {
-            item: so.getSublistValue({ sublistId: 'item', fieldId: 'item', line })
-        };
-        const customFields = so.getSublistFields({ sublistId: 'item' })
-            .filter(f => f.startsWith('custcol'));
+            const soId = r.id;
+            const x = r.values['internalid.item'];
+            const itemId = Number(x?.value || x);
+            const oldKey = String(r.values.lineuniquekey || '');
 
-        [...FIELDS, ...customFields].forEach(fieldId => {
-            data[fieldId] = so.getSublistValue({ sublistId: 'item', fieldId, line });
-        });
-        return data;
-    };
-
-    const insertLine = (so, line, data) => {
-        so.insertLine({ sublistId: 'item', line });
-        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: data.item });
-
-        Object.keys(data).forEach(fieldId => {
-            if (fieldId === 'item') return;
-            const value = data[fieldId];
-            if (value === null || value === undefined || value === '') return;
-            try {
-                so.setCurrentSublistValue({ sublistId: 'item', fieldId, value });
-            } catch (e) {
-                log.debug('Skipped field', { fieldId, value, msg: e.message });
-            }
-        });
-
-        so.commitLine({ sublistId: 'item' });
-    };
-
-    const reduce = context => {
-        const soId = context.key;
-        const keys = new Set(context.values);
-
-        try {
-            const so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: true });
-
-            // Find target lines, then work bottom-up so indexes don't shift
-            const targets = [];
-            for (let i = 0; i < so.getLineCount({ sublistId: 'item' }); i++) {
-                const key = String(so.getSublistValue({ sublistId: 'item', fieldId: 'lineuniquekey', line: i }));
-                if (keys.has(key)) targets.push(i);
-            }
-            targets.sort((a, b) => b - a);
-
-            targets.forEach(idx => {
-                const fulfilled = Number(so.getSublistValue({ sublistId: 'item', fieldId: 'quantityfulfilled', line: idx }) || 0);
-                const billed = Number(so.getSublistValue({ sublistId: 'item', fieldId: 'quantitybilled', line: idx }) || 0);
-                if (fulfilled > 0 || billed > 0) {
-                    log.error('Skipped - line already fulfilled/billed', { soId, idx });
-                    return;
-                }
-
-                const itemData = readLine(so, idx);
-
-                // Remove only this item line, then put it back at the same index.
-                // Lines below it (e.g. the discount line) shift up and then back down,
-                // so they end up in the same place, untouched.
-                so.removeLine({ sublistId: 'item', line: idx, ignoreRecalc: true });
-                insertLine(so, idx, itemData);
-
-                log.audit('Line rebuilt', { soId, line: idx, item: itemData.item });
+            const so = record.load({
+                type:record.Type.SALES_ORDER,
+                id:soId,
+                isDynamic:false
             });
 
-            const savedId = so.save({ enableSourcing: true, ignoreMandatoryFields: true });
-            log.audit('Sales Order saved', { soId: savedId, linesRebuilt: targets.length });
+            // Find exact affected line
+            let line = -1;
 
-        } catch (e) {
-            log.error('Error on SO ' + soId, { name: e.name, message: e.message, stack: e.stack });
+            for(let i=0; i<so.getLineCount({sublistId:'item'}); i++){
+                const key = String(so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'lineuniquekey',
+                    line:i
+                }) || '');
+
+                if(key === oldKey){
+                    line = i;
+                    break;
+                }
+            }
+
+            if(line < 0){
+                log.error('Line Not Found',{soId,oldKey});
+                return;
+            }
+
+            const itemValues = getValues(so,line);
+
+            /*
+             * Capture discount immediately below affected item.
+             * Your test order has Promotional Discount below item.
+             */
+            let discount = null;
+
+            if(line + 1 < so.getLineCount({sublistId:'item'})){
+
+                const nextType = String(so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'itemtype',
+                    line:line + 1
+                }) || '');
+
+                if(nextType === 'Discount' || nextType === 'Markup'){
+
+                    discount = {
+                        line: line + 1,
+
+                        item: so.getSublistValue({
+                            sublistId:'item',
+                            fieldId:'item',
+                            line:line + 1
+                        }),
+
+                        values: getValues(so,line + 1)
+                    };
+                }
+            }
+
+            log.audit('Captured',{
+                soId,
+                line,
+                itemId,
+                hasDiscount:!!discount
+            });
+
+
+            // --------------------------------------------------
+            // REMOVE DEPENDENT DISCOUNT FIRST
+            // --------------------------------------------------
+
+            if(discount){
+                so.removeLine({
+                    sublistId:'item',
+                    line:discount.line,
+                    ignoreRecalc:true
+                });
+            }
+
+
+            // --------------------------------------------------
+            // REMOVE OLD ITEM LINE
+            // --------------------------------------------------
+
+            so.removeLine({
+                sublistId:'item',
+                line,
+                ignoreRecalc:true
+            });
+
+
+            // --------------------------------------------------
+            // INSERT NEW ITEM AT EXACT SAME POSITION
+            // --------------------------------------------------
+
+            so.insertLine({
+                sublistId:'item',
+                line,
+                ignoreRecalc:true
+            });
+
+            so.setSublistValue({
+                sublistId:'item',
+                fieldId:'item',
+                line,
+                value:itemId
+            });
+
+            restoreValues(so,line,itemValues);
+
+
+            // --------------------------------------------------
+            // PUT DISCOUNT BACK DIRECTLY UNDER ITEM
+            // --------------------------------------------------
+
+            if(discount){
+
+                so.insertLine({
+                    sublistId:'item',
+                    line:line + 1,
+                    ignoreRecalc:true
+                });
+
+                so.setSublistValue({
+                    sublistId:'item',
+                    fieldId:'item',
+                    line:line + 1,
+                    value:discount.item
+                });
+
+                restoreValues(
+                    so,
+                    line + 1,
+                    discount.values
+                );
+            }
+
+
+            log.audit('Before Save',{
+                line,
+                item:so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'item',
+                    line
+                }),
+                itemType:so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'itemtype',
+                    line
+                }),
+                quantity:so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'quantity',
+                    line
+                }),
+                rate:so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'rate',
+                    line
+                }),
+                location:so.getSublistValue({
+                    sublistId:'item',
+                    fieldId:'location',
+                    line
+                })
+            });
+
+
+            const savedId = so.save({
+                enableSourcing:true,
+                ignoreMandatoryFields:false
+            });
+
+
+            log.audit('SUCCESS',{
+                soId:savedId,
+                itemId,
+                position:line,
+                discountRestored:!!discount
+            });
+
+        }catch(e){
+
+            log.error('ERROR',{
+                name:e.name,
+                message:e.message,
+                stack:e.stack
+            });
         }
     };
 
-    const summarize = summary => {
-        summary.reduceSummary.errors.iterator().each((key, err) => {
-            log.error('Reduce error ' + key, err);
-            return true;
-        });
-    };
-
-    return { getInputData, map, reduce, summarize };
+    return {getInputData,map};
 });
