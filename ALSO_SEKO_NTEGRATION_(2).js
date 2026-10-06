@@ -1,206 +1,119 @@
 /**
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
+ *
+ * Re-adds Sales Order lines whose item was converted from Non-Inventory to Inventory.
+ * The old line keeps its old item type forever, so the line is removed and a new line
+ * with the same values is inserted at the SAME position. Only the item line is touched;
+ * discount/promotion lines are left exactly as they are.
  */
-define(['N/search','N/record','N/log'], (search, record, log) => {
+define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
 
-    const TEMP_ITEM_ID = 9999; // <-- PUT A VALID TEST INVENTORY ITEM ID HERE
-
-    const SKIP = [
-        'item','line','lineuniquekey','linenumber','id','sys_id','sys_parentid',
-        'itemtype','itemsubtype','isnoninventory','olditemid','item_display',
-        'amount','grossamt','tax1amt','taxrate1',
-        'quantitycommitted','quantityfulfilled','quantitybilled',
-        'quantityshiprecv','quantityavailable','quantityonhand',
-        'quantitybackordered','backordered','commitinventory',
-        'commitmentfirm','oldcommitmentfirm','inventorydetailavail',
-        'linked','discline','orderdoc','orderline','islinefulfilled',
-        'itempicked','itempacked','createdpo',
-        'origquantity','initquantity','origlocation','origunits',
-        'price_display','pricelevels','unitslist','binitem',
-        'locationusesbins','onorder','weightinlb','isposting'
+    // Order matters: price level before rate, rate before amount.
+    const FIELDS = [
+        'quantity', 'units', 'description', 'price', 'rate', 'amount',
+        'location', 'taxcode', 'department', 'class',
+        'expectedshipdate', 'requesteddate', 'isclosed'
     ];
 
     const getInputData = () => search.create({
-        type:'salesorder',
-        filters:[
-            ['mainline','is','F'],'AND',
-            ['shipping','is','F'],'AND',
-            ['taxline','is','F'],'AND',
-            ['item.type','anyof','InvtPart'],'AND',
-            ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END','equalto','1'],'AND',
-            ['internalidnumber','equalto','1049053']
+        type: 'salesorder',
+        filters: [
+            ['mainline', 'is', 'F'], 'AND',
+            ['shipping', 'is', 'F'], 'AND',
+            ['taxline', 'is', 'F'], 'AND',
+            ['item.type', 'anyof', 'InvtPart'], 'AND',
+            ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END', 'equalto', '1'], 'AND',
+            ['internalidnumber', 'equalto', '1049053'] // TEST ORDER - remove when ready
         ],
-        columns:[
-            'internalid',
-            'lineuniquekey',
-            search.createColumn({name:'internalid',join:'item'})
-        ]
+        columns: ['lineuniquekey']
     });
 
+    // Group all lines by Sales Order so each order is loaded/saved only once
     const map = context => {
+        const r = JSON.parse(context.value);
+        context.write({ key: r.id, value: String(r.values.lineuniquekey) });
+    };
+
+    const readLine = (so, line) => {
+        const data = {
+            item: so.getSublistValue({ sublistId: 'item', fieldId: 'item', line })
+        };
+        const customFields = so.getSublistFields({ sublistId: 'item' })
+            .filter(f => f.startsWith('custcol'));
+
+        [...FIELDS, ...customFields].forEach(fieldId => {
+            data[fieldId] = so.getSublistValue({ sublistId: 'item', fieldId, line });
+        });
+        return data;
+    };
+
+    const insertLine = (so, line, data) => {
+        so.insertLine({ sublistId: 'item', line });
+        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: data.item });
+
+        Object.keys(data).forEach(fieldId => {
+            if (fieldId === 'item') return;
+            const value = data[fieldId];
+            if (value === null || value === undefined || value === '') return;
+            try {
+                so.setCurrentSublistValue({ sublistId: 'item', fieldId, value });
+            } catch (e) {
+                log.debug('Skipped field', { fieldId, value, msg: e.message });
+            }
+        });
+
+        so.commitLine({ sublistId: 'item' });
+    };
+
+    const reduce = context => {
+        const soId = context.key;
+        const keys = new Set(context.values);
+
         try {
-            const r = JSON.parse(context.value);
+            const so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: true });
 
-            const soId = r.id;
-            const itemResult = r.values['internalid.item'];
-            const itemId = Number(itemResult?.value || itemResult);
-            const lineKey = String(r.values.lineuniquekey || '');
+            // Find target lines, then work bottom-up so indexes don't shift
+            const targets = [];
+            for (let i = 0; i < so.getLineCount({ sublistId: 'item' }); i++) {
+                const key = String(so.getSublistValue({ sublistId: 'item', fieldId: 'lineuniquekey', line: i }));
+                if (keys.has(key)) targets.push(i);
+            }
+            targets.sort((a, b) => b - a);
 
-            const so = record.load({
-                type:record.Type.SALES_ORDER,
-                id:soId,
-                isDynamic:false
-            });
-
-            // Find exact existing line
-            let line = -1;
-
-            for(let i=0; i<so.getLineCount({sublistId:'item'}); i++){
-                const key = String(so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'lineuniquekey',
-                    line:i
-                }) || '');
-
-                if(key === lineKey){
-                    line = i;
-                    break;
+            targets.forEach(idx => {
+                const fulfilled = Number(so.getSublistValue({ sublistId: 'item', fieldId: 'quantityfulfilled', line: idx }) || 0);
+                const billed = Number(so.getSublistValue({ sublistId: 'item', fieldId: 'quantitybilled', line: idx }) || 0);
+                if (fulfilled > 0 || billed > 0) {
+                    log.error('Skipped - line already fulfilled/billed', { soId, idx });
+                    return;
                 }
-            }
 
-            if(line < 0){
-                log.error('Line Not Found',{soId,lineKey});
-                return;
-            }
+                const itemData = readLine(so, idx);
 
-            // Capture old editable values
-            const values = {};
+                // Remove only this item line, then put it back at the same index.
+                // Lines below it (e.g. the discount line) shift up and then back down,
+                // so they end up in the same place, untouched.
+                so.removeLine({ sublistId: 'item', line: idx, ignoreRecalc: true });
+                insertLine(so, idx, itemData);
 
-            so.getSublistFields({sublistId:'item'}).forEach(field => {
-                if(SKIP.includes(field)) return;
-
-                try{
-                    values[field] = so.getSublistValue({
-                        sublistId:'item',
-                        fieldId:field,
-                        line
-                    });
-                }catch(e){}
+                log.audit('Line rebuilt', { soId, line: idx, item: itemData.item });
             });
 
-            log.audit('Before Change',{
-                line,
-                item:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'item',
-                    line
-                }),
-                itemType:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'itemtype',
-                    line
-                }),
-                lineKey
-            });
+            const savedId = so.save({ enableSourcing: true, ignoreMandatoryFields: true });
+            log.audit('Sales Order saved', { soId: savedId, linesRebuilt: targets.length });
 
-
-            // 1. Change SAME LINE to temporary item
-            so.setSublistValue({
-                sublistId:'item',
-                fieldId:'item',
-                line,
-                value:TEMP_ITEM_ID
-            });
-
-            log.debug('Temporary Item Set',{
-                line,
-                tempItem:TEMP_ITEM_ID
-            });
-
-
-            // 2. Change SAME LINE back to original item
-            so.setSublistValue({
-                sublistId:'item',
-                fieldId:'item',
-                line,
-                value:itemId
-            });
-
-            log.debug('Original Item Reset',{
-                line,
-                itemId
-            });
-
-
-            // 3. Restore old values
-            Object.keys(values).forEach(field => {
-                try{
-                    so.setSublistValue({
-                        sublistId:'item',
-                        fieldId:field,
-                        line,
-                        value:values[field]
-                    });
-                }catch(e){}
-            });
-
-
-            log.audit('Before Save',{
-                line,
-                item:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'item',
-                    line
-                }),
-                itemType:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'itemtype',
-                    line
-                }),
-                quantity:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'quantity',
-                    line
-                }),
-                rate:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'rate',
-                    line
-                }),
-                location:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'location',
-                    line
-                }),
-                lineUniqueKey:so.getSublistValue({
-                    sublistId:'item',
-                    fieldId:'lineuniquekey',
-                    line
-                })
-            });
-
-
-            const savedId = so.save({
-                enableSourcing:true,
-                ignoreMandatoryFields:false
-            });
-
-            log.audit('SUCCESS',{
-                soId:savedId,
-                line,
-                itemId,
-                oldLineKey:lineKey
-            });
-
-        } catch(e){
-            log.error('Map Error',{
-                name:e.name,
-                message:e.message,
-                stack:e.stack
-            });
+        } catch (e) {
+            log.error('Error on SO ' + soId, { name: e.name, message: e.message, stack: e.stack });
         }
     };
 
-    return {getInputData,map};
+    const summarize = summary => {
+        summary.reduceSummary.errors.iterator().each((key, err) => {
+            log.error('Reduce error ' + key, err);
+            return true;
+        });
+    };
+
+    return { getInputData, map, reduce, summarize };
 });
