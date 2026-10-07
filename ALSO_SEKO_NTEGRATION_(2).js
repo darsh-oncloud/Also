@@ -18,23 +18,9 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
     ];
 
 
-    const getInputData = () => search.create({
-        type:'salesorder',
-        filters:[
-            ['mainline','is','F'],'AND',
-            ['shipping','is','F'],'AND',
-            ['taxline','is','F'],'AND',
-            ['item.type','anyof','InvtPart'],'AND',
-            ['formulanumeric: CASE WHEN {commit} IS NULL THEN 1 ELSE 0 END','equalto','1'],'AND',
-
-            // TEST ORDER
-            ['internalidnumber','equalto','1049358']
-        ],
-        columns:[
-            'internalid',
-            'lineuniquekey',
-            search.createColumn({name:'internalid',join:'item'})
-        ]
+    // USE SAVED SEARCH
+    const getInputData = () => search.load({
+        id:'customsearch4206'
     });
 
 
@@ -252,7 +238,6 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
             });
 
 
-            // Restore item values
             const itemFailed = restoreValues(
                 so,
                 line,
@@ -307,7 +292,6 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                 );
 
 
-                // Log discount after recreation
                 const newDiscountValues = getValues(
                     so,
                     line + 1
