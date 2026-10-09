@@ -18,13 +18,19 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
     ];
 
 
-    // USE SAVED SEARCH
+    // --------------------------------------------------
+    // SAVED SEARCH
+    // --------------------------------------------------
+
     const getInputData = () => search.load({
         id:'customsearch4206'
     });
 
 
-    // Get all editable/current line values
+    // --------------------------------------------------
+    // GET ALL EXISTING EDITABLE LINE VALUES
+    // --------------------------------------------------
+
     const getValues = (rec,line) => {
 
         const values = {};
@@ -48,7 +54,10 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
     };
 
 
-    // Restore values and return anything NetSuite refused
+    // --------------------------------------------------
+    // RESTORE LINE VALUES
+    // --------------------------------------------------
+
     const restoreValues = (rec,line,values) => {
 
         const failed = [];
@@ -62,8 +71,9 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                     line,
                     value:values[field]
                 });
-            }
-            catch(e){
+
+            }catch(e){
+
                 failed.push({
                     field,
                     value:values[field],
@@ -76,6 +86,10 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
     };
 
 
+    // --------------------------------------------------
+    // MAP
+    // --------------------------------------------------
+
     const map = context => {
 
         try{
@@ -83,9 +97,19 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
             const r = JSON.parse(context.value);
 
             const soId = r.id;
+
             const x = r.values['internalid.item'];
             const itemId = Number(x?.value || x);
-            const oldKey = String(r.values.lineuniquekey || '');
+
+            // USE LINE ID FROM SAVED SEARCH
+            const oldLineId = String(r.values.line || '');
+
+
+            log.audit('Processing',{
+                soId,
+                itemId,
+                oldLineId
+            });
 
 
             const so = record.load({
@@ -96,22 +120,24 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
 
             // --------------------------------------------------
-            // FIND EXACT AFFECTED LINE
+            // FIND EXACT AFFECTED LINE USING LINE ID
             // --------------------------------------------------
 
             let line = -1;
 
             for(let i=0; i<so.getLineCount({sublistId:'item'}); i++){
 
-                const key = String(
+                const currentLineId = String(
                     so.getSublistValue({
                         sublistId:'item',
-                        fieldId:'lineuniquekey',
+                        fieldId:'line',
                         line:i
                     }) || ''
                 );
 
-                if(key === oldKey){
+
+                if(currentLineId === oldLineId){
+
                     line = i;
                     break;
                 }
@@ -119,7 +145,13 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
 
             if(line < 0){
-                log.error('Line Not Found',{soId,oldKey});
+
+                log.error('Line Not Found',{
+                    soId,
+                    itemId,
+                    oldLineId
+                });
+
                 return;
             }
 
@@ -130,21 +162,23 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
             const itemValues = getValues(so,line);
 
+
             log.audit('ITEM - Values Before Remove',{
                 soId,
                 line,
+                lineId:oldLineId,
                 itemId,
-                oldLineUniqueKey:oldKey,
                 fieldCount:Object.keys(itemValues).length,
                 values:itemValues
             });
 
 
             // --------------------------------------------------
-            // CAPTURE RELATED DISCOUNT
+            // CAPTURE RELATED DISCOUNT / MARKUP
             // --------------------------------------------------
 
             let discount = null;
+
 
             if(line + 1 < so.getLineCount({sublistId:'item'})){
 
@@ -169,7 +203,10 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                             line:line + 1
                         }),
 
-                        values:getValues(so,line + 1)
+                        values:getValues(
+                            so,
+                            line + 1
+                        )
                     };
 
 
@@ -195,6 +232,7 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                     ignoreRecalc:true
                 });
 
+
                 log.debug('Discount Removed',{
                     line:discount.line,
                     item:discount.item
@@ -215,6 +253,7 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
             log.debug('Old Item Removed',{
                 line,
+                lineId:oldLineId,
                 itemId
             });
 
@@ -238,6 +277,10 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
             });
 
 
+            // --------------------------------------------------
+            // RESTORE OLD ITEM VALUES
+            // --------------------------------------------------
+
             const itemFailed = restoreValues(
                 so,
                 line,
@@ -246,10 +289,14 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
 
             // --------------------------------------------------
-            // LOG VALUES AFTER ITEM RECREATED
+            // LOG ITEM VALUES AFTER RE-ADD
             // --------------------------------------------------
 
-            const newItemValues = getValues(so,line);
+            const newItemValues = getValues(
+                so,
+                line
+            );
+
 
             log.audit('ITEM - Values After Re-Add',{
                 line,
@@ -260,7 +307,11 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
 
             if(itemFailed.length){
-                log.error('ITEM - Fields Not Restored',itemFailed);
+
+                log.error(
+                    'ITEM - Fields Not Restored',
+                    itemFailed
+                );
             }
 
 
@@ -307,6 +358,7 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
 
 
                 if(discountFailed.length){
+
                     log.error(
                         'DISCOUNT - Fields Not Restored',
                         discountFailed
@@ -369,13 +421,12 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
                 soId:savedId,
                 itemId,
                 position:line,
-                oldLineUniqueKey:oldKey,
+                oldLineId,
                 discountRestored:!!discount
             });
 
 
-        }
-        catch(e){
+        }catch(e){
 
             log.error('ERROR',{
                 name:e.name,
@@ -390,4 +441,5 @@ define(['N/search','N/record','N/log'], (search, record, log) => {
         getInputData,
         map
     };
+
 });
