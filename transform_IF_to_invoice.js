@@ -222,7 +222,9 @@ function (record, search, log, https) {
         }
 
         invoice.setValue({ fieldId: 'account', value: AR_ACCOUNT });
-        invoice.setValue({ fieldId: 'shippingcost', value: 0 });
+        //invoice.setValue({ fieldId: 'shippingcost', value: 0 });
+        invoice.setValue({ fieldId: 'custbody_ava_disable_tax_calculation', value: true });
+
 
         var lineCount = invoice.getLineCount({ sublistId: 'item' });
 
