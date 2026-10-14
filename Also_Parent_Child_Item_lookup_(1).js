@@ -43,6 +43,11 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var tranRec = context.newRecord;
             var recType = tranRec.type;
 
+          if (recType === 'salesorder' && String(tranRec.id) === '1134639') {
+              log.debug('SKIP ORDER', 'Skipping SO 1134639 - beforeSubmit');
+              return;
+          }
+
             if (recType !== 'salesorder') {
                 return;
             }
@@ -214,6 +219,11 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var tranId = context.newRecord.id;
             var recType = context.newRecord.type;
             if (!tranId) return;
+
+          if (recType === 'salesorder' && String(tranId) === '1134639') {
+              log.debug('SKIP ORDER', 'Skipping SO 1134639 - afterSubmit');
+              return;
+          }
 
           // var giftCardId = context.newRecord.getValue({
           //     fieldId: 'custbody_celigo_shopify_giftcard_id'
