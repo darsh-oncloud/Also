@@ -32,7 +32,7 @@ define(['N/record', 'N/log', 'N/https', 'N/search'], function (record, log, http
 
     function afterSubmit(context) {
         try {
-            if (context.type !== context.UserEventType.CREATE && context.type !== context.UserEventType.EDIT) return;
+            if (context.type !== context.UserEventType.CREATE) return;
 
             var fulfillment = context.newRecord;
             var fulfillmentId = fulfillment.id;
