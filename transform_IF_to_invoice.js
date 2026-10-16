@@ -2,13 +2,19 @@
  * @NApiVersion 2.1
  * @NScriptType UserEventScript
  *
- * Same logic as before, only the hardcoded item 909 is replaced by a list:
+ * Item Fulfillment -> Invoice
  *
  *   Reservation Item = an ID in TM_B_ITEM_ID, or a Non-Inventory Item whose
  *                      PARENT is one of those IDs.
  *
  *   Reservation Items -> NOT invoiced, their Sales Order line is CLOSED
  *   Everything else   -> invoiced (qty = fulfilled qty, matched on KEY_FIELD)
+ *
+ *   Line-level discounts:
+ *     STEP 1 - decide which item lines are invoiced
+ *     STEP 2 - keep a Discount line only if, on the SALES ORDER, it sits
+ *              directly under an item that was invoiced in STEP 1
+ *              (invoice line -> SO line matched via 'orderline')
  */
 define(['N/record', 'N/search', 'N/log', 'N/https'],
 function (record, search, log, https) {
@@ -79,6 +85,53 @@ function (record, search, log, https) {
 
         log.debug('Reservation Items', Object.keys(items));
         return items;
+    }
+
+
+    // ============================================================
+    // MAP SO DISCOUNT LINES -> PARENT ITEM
+    // ============================================================
+
+    /**
+     * Line-level discount = Discount line directly under an item on the SO.
+     *
+     * @param {string|number} salesOrderId
+     * @returns {Object} { "<SO line id>": { key: '<KEY_FIELD>', item: '<item id>' } }
+     */
+    function getDiscountParents(salesOrderId) {
+
+        var map = {};
+
+        try {
+            var so = record.load({ type: record.Type.SALES_ORDER, id: salesOrderId });
+            var lineCount = so.getLineCount({ sublistId: 'item' });
+            var parent = null;
+
+            for (var i = 0; i < lineCount; i++) {
+
+                var type   = so.getSublistValue({ sublistId: 'item', fieldId: 'itemtype', line: i });
+                var lineId = String(so.getSublistValue({ sublistId: 'item', fieldId: 'line', line: i }));
+
+                if (type === 'Discount') {
+                    if (parent) map[lineId] = parent;   // belongs to the item above it
+                    continue;
+                }
+
+                if (type === 'Description') continue;
+                if (type === 'Subtotal') { parent = null; continue; }
+
+                // Real item line - becomes the parent for discounts below it
+                parent = {
+                    key:  String(so.getSublistValue({ sublistId: 'item', fieldId: KEY_FIELD, line: i }) || ''),
+                    item: String(so.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i }))
+                };
+            }
+        } catch (e) {
+            log.error('Discount Parent Map Failed', e.name + ': ' + e.message);
+        }
+
+        log.debug('SO Discount Parents', map);
+        return map;
     }
 
 
@@ -196,9 +249,13 @@ function (record, search, log, https) {
     // ============================================================
     // CREATE INVOICE
     // ============================================================
+
     /**
-     * Transforms Sales Order to Invoice, keeping only the lines whose
-     * KEY_FIELD matches this fulfillment.
+     * Transforms Sales Order to Invoice.
+     *   STEP 1 - keep item lines whose KEY_FIELD matches this fulfillment
+     *   STEP 2 - keep Discount lines that sit under a kept item on the SO
+     *   STEP 3 - set quantities
+     *   STEP 4 - remove everything else
      */
     function createInvoice(salesOrderId, fulfilledLines, fulfillmentLocation, fulfillmentId, reservationItems) {
 
@@ -206,6 +263,8 @@ function (record, search, log, https) {
             log.audit('Invoice Not Created', 'No fulfilled lines with a ' + KEY_FIELD + ' were found.');
             return null;
         }
+
+        var discountParents = getDiscountParents(salesOrderId);
 
         var invoice;
         try {
@@ -225,30 +284,65 @@ function (record, search, log, https) {
         //invoice.setValue({ fieldId: 'shippingcost', value: 0 });
         invoice.setValue({ fieldId: 'custbody_ava_disable_tax_calculation', value: true });
 
+        var lineCount    = invoice.getLineCount({ sublistId: 'item' });
+        var keepQty      = {};   // invoice line index -> qty   (items)
+        var keepDiscount = {};   // invoice line index -> true  (discounts)
+        var invoicedKeys = {};   // KEY_FIELD values actually invoiced
 
-        var lineCount = invoice.getLineCount({ sublistId: 'item' });
+        // ----------------------------------------------------
+        // STEP 1 - items that need to be invoiced
+        // ----------------------------------------------------
+        for (var j = 0; j < lineCount; j++) {
 
-        // Loop backwards - lines are being removed.
-        for (var j = lineCount - 1; j >= 0; j--) {
+            var type = invoice.getSublistValue({ sublistId: 'item', fieldId: 'itemtype', line: j });
+            if (type === 'Discount' || type === 'Subtotal' || type === 'Description') continue;
 
             // A Reservation Item is never invoiced.
             var lineItem = String(invoice.getSublistValue({ sublistId: 'item', fieldId: 'item', line: j }));
-
-            if (reservationItems[lineItem]) {
-                invoice.removeLine({ sublistId: 'item', line: j });
-                continue;
-            }
+            if (reservationItems[lineItem]) continue;
 
             var key = String(invoice.getSublistValue({ sublistId: 'item', fieldId: KEY_FIELD, line: j }) || '');
+            if (!fulfilledLines[key]) continue;
 
-            if (!fulfilledLines[key]) {
-                invoice.removeLine({ sublistId: 'item', line: j });
-                continue;
+            keepQty[j]        = fulfilledLines[key];
+            invoicedKeys[key] = true;
+        }
+
+        // ----------------------------------------------------
+        // STEP 2 - discounts that sit under an invoiced item on the SO
+        // ----------------------------------------------------
+        for (var d = 0; d < lineCount; d++) {
+
+            if (invoice.getSublistValue({ sublistId: 'item', fieldId: 'itemtype', line: d }) !== 'Discount') continue;
+
+            var orderLine = String(invoice.getSublistValue({ sublistId: 'item', fieldId: 'orderline', line: d }) || '');
+            var parent    = discountParents[orderLine];
+
+            if (parent && parent.key && invoicedKeys[parent.key] && !reservationItems[parent.item]) {
+                keepDiscount[d] = true;
+                log.debug('Discount Kept',
+                    'Invoice line ' + d + ' | SO line ' + orderLine + ' | parent key ' + parent.key);
+            } else {
+                log.debug('Discount Dropped', 'Invoice line ' + d + ' | SO line ' + orderLine);
             }
+        }
 
-            invoice.selectLine({ sublistId: 'item', line: j });
-            invoice.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: fulfilledLines[key] });
+        // ----------------------------------------------------
+        // STEP 3 - set quantities (indexes still stable)
+        // ----------------------------------------------------
+        Object.keys(keepQty).forEach(function (idx) {
+            invoice.selectLine({ sublistId: 'item', line: Number(idx) });
+            invoice.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: keepQty[idx] });
             invoice.commitLine({ sublistId: 'item' });
+        });
+
+        // ----------------------------------------------------
+        // STEP 4 - remove everything else (backwards)
+        // ----------------------------------------------------
+        for (var r = lineCount - 1; r >= 0; r--) {
+            if (keepQty[r] === undefined && !keepDiscount[r]) {
+                invoice.removeLine({ sublistId: 'item', line: r });
+            }
         }
 
         if (!invoice.getLineCount({ sublistId: 'item' })) {
@@ -269,6 +363,7 @@ function (record, search, log, https) {
     // ============================================================
     // CLOSE RESERVATION ITEM LINES ON THE SALES ORDER
     // ============================================================
+
     /**
      * Closes every line whose item is in itemIds. One load, one save,
      * no matter how many Reservation Items there are.
