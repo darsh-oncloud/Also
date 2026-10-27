@@ -43,10 +43,10 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var tranRec = context.newRecord;
             var recType = tranRec.type;
 
-          if (recType === 'salesorder' && String(tranRec.id) === '1134639') {
-              log.debug('SKIP ORDER', 'Skipping SO 1134639 - beforeSubmit');
-              return;
-          }
+            if (recType === 'salesorder' && String(tranRec.id) === '1134639') {
+                log.debug('SKIP ORDER', 'Skipping SO 1134639 - beforeSubmit');
+                return;
+            }
 
             if (recType !== 'salesorder') {
                 return;
@@ -220,24 +220,24 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var recType = context.newRecord.type;
             if (!tranId) return;
 
-          if (recType === 'salesorder' && String(tranId) === '1134639') {
-              log.debug('SKIP ORDER', 'Skipping SO 1134639 - afterSubmit');
-              return;
-          }
+            if (recType === 'salesorder' && String(tranId) === '1134639') {
+                log.debug('SKIP ORDER', 'Skipping SO 1134639 - afterSubmit');
+                return;
+            }
 
-          // var giftCardId = context.newRecord.getValue({
-          //     fieldId: 'custbody_celigo_shopify_giftcard_id'
-          // });
+            // var giftCardId = context.newRecord.getValue({
+            //     fieldId: 'custbody_celigo_shopify_giftcard_id'
+            // });
 
-          // if (giftCardId) {
-          //     record.submitFields({
-          //         type: record.Type.SALES_ORDER,
-          //         id: tranId,
-          //         values: {
-          //            custbody_discount_removed: true
-          //         }
-          //     });
-          //  }
+            // if (giftCardId) {
+            //     record.submitFields({
+            //         type: record.Type.SALES_ORDER,
+            //         id: tranId,
+            //         values: {
+            //            custbody_discount_removed: true
+            //         }
+            //     });
+            //  }
 
             if (recType === 'purchaseorder') {
                 log.debug('START', 'PO Id: ' + tranId);
@@ -319,7 +319,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 itemAlsoCategoryJson = getItemAlsoCategoryJson(lineItems);
             }
 
-          if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
+            if (!hasKeys(parentChildJson) && !hasKeys(itemMerchJson)) {
                 log.debug('STOP', 'No parent-child setup and no merch/onbike-offbike items found');
                 return;
             }
@@ -331,7 +331,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             var i;
 
             /*
-             * NEW LOGIC - PASS 1:
+             * PASS 1:
              * Find all parent lines on the order.
              * Parent line condition:
              * 1. Item has custitem_related_components
@@ -396,6 +396,9 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             /*
              * PASS 3:
              * Assign component lines.
+             * Supports both:
+             * - One component line with qty = parent qty
+             * - Split component lines (e.g. 1 + 1) adding up to parent qty
              */
             for (i = 0; i < parentLines.length; i++) {
                 var parentObj = parentLines[i];
@@ -406,7 +409,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 }
 
                 for (var childId in childObj) {
-                    var matchedLine = findMatchingComponentLine(
+                    var matchedLines = findMatchingComponentLines(
                         tranRec,
                         lineCount,
                         childId,
@@ -415,10 +418,18 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                         parentLines
                     );
 
-                    if (matchedLine !== -1) {
-                        if (!isAllowedItemType(tranRec, matchedLine)) {
-                            continue;
-                        }
+                    if (!matchedLines.length) {
+                        log.debug('COMPONENT MATCH NOT FOUND', {
+                            childItemId: childId,
+                            expectedQuantity: parentObj.quantity,
+                            parentItemId: parentObj.parentItemId,
+                            parentLine: parentObj.line
+                        });
+                        continue;
+                    }
+
+                    for (var m = 0; m < matchedLines.length; m++) {
+                        var matchedLine = matchedLines[m];
 
                         tranRec.setSublistValue({
                             sublistId: ITEM_SUBLIST,
@@ -432,23 +443,24 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
 
                         usedComponentLines[matchedLine] = true;
                         hasChanges = true;
-                    } else {
-                        log.debug('COMPONENT MATCH NOT FOUND', {
-                            childItemId: childId,
-                            expectedQuantity: parentObj.quantity,
-                            parentItemId: parentObj.parentItemId,
-                            parentLine: parentObj.line
-                        });
                     }
+
+                    log.debug('COMPONENT LINES ASSIGNED', {
+                        childItemId: childId,
+                        parentItemId: parentObj.parentItemId,
+                        parentLine: parentObj.line,
+                        lines: JSON.stringify(matchedLines)
+                    });
                 }
             }
 
             /*
              * PASS 4:
              * For all remaining lines:
+             * - Filler lines keep their type, only fulfillment key is set
              * - If On Bike, mark Add-On
              * - If Off Bike, mark Merch
-             * - If neither, clear parent/type fields
+             * - Otherwise, mark Merch (default)
              */
             for (i = 0; i < lineCount; i++) {
                 var lineItemId = tranRec.getSublistValue({
@@ -457,14 +469,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                     line: i
                 });
 
-                var lineQty = tranRec.getSublistValue({
-                    sublistId: ITEM_SUBLIST,
-                    fieldId: 'quantity',
-                    line: i
-                });
-
                 lineItemId = lineItemId ? String(lineItemId) : '';
-                lineQty = toNumber(lineQty);
 
                 if (!lineItemId) {
                     continue;
@@ -528,6 +533,7 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
                 transactionId: tranId,
                 recordType: recType,
                 parentCount: parentLines.length,
+                componentLineCount: Object.keys(usedComponentLines).length,
                 updated: hasChanges
             });
 
@@ -614,11 +620,11 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             ],
             columns: [
                 'internalid',
-                MERCH_ITEM_FIELD
+                'custitem_item_category'
             ]
         }).run().each(function(result) {
             var itemId = result.getValue({ name: 'internalid' });
-            var merchValue = result.getValue({ name: MERCH_ITEM_FIELD });
+            var merchValue = result.getValue({ name: 'custitem_item_category' });
 
             itemId = itemId ? String(itemId) : '';
             merchValue = merchValue ? String(merchValue) : '';
@@ -731,18 +737,16 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
         }
 
         search.create({
-            type: "noninventoryitem",
-            filters:
-            [
-               ["type","anyof","NonInvtPart"],
-               "AND",
-               ["internalid","anyof", itemIds]
+            type: 'noninventoryitem',
+            filters: [
+                ['type', 'anyof', 'NonInvtPart'],
+                'AND',
+                ['internalid', 'anyof', itemIds]
             ],
-            columns:
-            [
-               search.createColumn({name: PACKAGING_FILLER_FIELD})
+            columns: [
+                search.createColumn({ name: PACKAGING_FILLER_FIELD })
             ]
-        }).run().each(function(result){
+        }).run().each(function(result) {
 
             var fillerValues = result.getValue({
                 name: PACKAGING_FILLER_FIELD
@@ -817,39 +821,84 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
         return obj;
     }
 
-    function findMatchingComponentLine(tranRec, lineCount, childId, parentQty, usedComponentLines, parentLines) {
+    /*
+     * Returns an array of line indexes that together satisfy the parent qty
+     * for one child item.
+     * 1. Prefers a single unused line whose qty equals the parent qty.
+     * 2. Otherwise accumulates split lines (e.g. 1 + 1) until the total equals the parent qty.
+     * Returns [] if the parent qty cannot be satisfied exactly (nothing is assigned).
+     */
+    function findMatchingComponentLines(tranRec, lineCount, childId, requiredQty, usedComponentLines, parentLines) {
+        var candidates = [];
         var i;
 
         for (i = 0; i < lineCount; i++) {
-            if (usedComponentLines[i]) {
+            if (usedComponentLines[i] || isParentLine(i, parentLines)) {
                 continue;
             }
 
-            if (isParentLine(i, parentLines)) {
+            if (!isAllowedItemType(tranRec, i)) {
                 continue;
             }
 
-            var lineItemId = tranRec.getSublistValue({
+            var lineItemId = String(tranRec.getSublistValue({
                 sublistId: ITEM_SUBLIST,
                 fieldId: 'item',
                 line: i
-            });
+            }) || '');
 
-            var lineQty = tranRec.getSublistValue({
+            // never consume filler lines as components
+            var lineType = String(tranRec.getSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: TYPE_COLUMN_FIELD,
+                line: i
+            }) || '');
+
+            if (lineItemId !== String(childId) || lineType === TYPE_FILLER) {
+                continue;
+            }
+
+            var lineQty = toNumber(tranRec.getSublistValue({
                 sublistId: ITEM_SUBLIST,
                 fieldId: 'quantity',
                 line: i
-            });
+            }));
 
-            lineItemId = lineItemId ? String(lineItemId) : '';
-            lineQty = toNumber(lineQty);
-
-            if (lineItemId === String(childId) && sameNumber(lineQty, parentQty)) {
-                return i;
+            if (lineQty > 0) {
+                candidates.push({ line: i, qty: lineQty });
             }
         }
 
-        return -1;
+        // 1. Prefer a single line with exact qty
+        for (i = 0; i < candidates.length; i++) {
+            if (sameNumber(candidates[i].qty, requiredQty)) {
+                return [candidates[i].line];
+            }
+        }
+
+        // 2. Accumulate split lines up to the parent qty
+        var picked = [];
+        var total = 0;
+
+        for (i = 0; i < candidates.length; i++) {
+            if (total + candidates[i].qty <= requiredQty + 0.00001) {
+                picked.push(candidates[i].line);
+                total += candidates[i].qty;
+
+                if (sameNumber(total, requiredQty)) {
+                    return picked;
+                }
+            }
+        }
+
+        log.debug('COMPONENT QTY NOT SATISFIED', {
+            childItemId: childId,
+            requiredQty: requiredQty,
+            foundQty: total,
+            candidateLines: JSON.stringify(candidates)
+        });
+
+        return [];
     }
 
     function isParentLine(lineNo, parentLines) {
@@ -871,18 +920,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
         return Math.abs(num1 - num2) < 0.00001;
     }
 
-    function setTypeByMerchField(tranRec, line, itemId, itemMerchJson) {
-        var merchValue = itemMerchJson[itemId] || '';
-
-        if (merchValue === MERCH_ON_BIKE_VALUE) {
-            setTypeField(tranRec, line, TYPE_ADDON);
-        } else if (merchValue === MERCH_OFF_BIKE_VALUE) {
-            setTypeField(tranRec, line, TYPE_MERCH);
-        } else {
-            clearTypeField(tranRec, line);
-        }
-    }
-
     function clearParentField(tranRec, line) {
         try {
             tranRec.setSublistValue({
@@ -893,22 +930,6 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
             });
         } catch (e) {
             log.debug('clearParentField Error', {
-                line: line,
-                error: e.message
-            });
-        }
-    }
-
-    function clearTypeField(tranRec, line) {
-        try {
-            tranRec.setSublistValue({
-                sublistId: ITEM_SUBLIST,
-                fieldId: TYPE_COLUMN_FIELD,
-                line: line,
-                value: ''
-            });
-        } catch (e) {
-            log.debug('clearTypeField Error', {
                 line: line,
                 error: e.message
             });
@@ -945,21 +966,21 @@ define(['N/record', 'N/search', 'N/log'], function(record, search, log) {
     }
 
     function setFulfillmentKeyFromLineUniqueKey(tranRec, line) {
-       var lineUniqueKey = tranRec.getSublistValue({
-           sublistId: ITEM_SUBLIST,
-           fieldId: 'lineuniquekey',
-           line: line
-       });
-
-       if (lineUniqueKey) {
-          tranRec.setSublistValue({
+        var lineUniqueKey = tranRec.getSublistValue({
             sublistId: ITEM_SUBLIST,
-            fieldId: FULFILLMENT_KEY_FIELD,
-            line: line,
-            value: String(lineUniqueKey)
+            fieldId: 'lineuniquekey',
+            line: line
         });
+
+        if (lineUniqueKey) {
+            tranRec.setSublistValue({
+                sublistId: ITEM_SUBLIST,
+                fieldId: FULFILLMENT_KEY_FIELD,
+                line: line,
+                value: String(lineUniqueKey)
+            });
+        }
     }
-}
 
     function isAllowedItemType(tranRec, line) {
         var lineItemType = tranRec.getSublistValue({
