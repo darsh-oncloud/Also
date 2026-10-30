@@ -25,6 +25,7 @@ function (search, record, file, log) {
     // ---------- Settings ----------
     var ITEM_ID = '909';            // TM-B-RESERVATION
     var FOLDER_ID = 27474;          // backups + summary file
+    var ETAIL_FIELD = 'custbody_celigo_etail_order_id';
 
     // true  = test run: backups + logs only, nothing is deleted
     // false = real run: RMAs are deleted
@@ -90,6 +91,7 @@ function (search, record, file, log) {
                 id: rmaId
             });
             tranid = String(rma.getValue('tranid') || '');
+            var etailId = String(rma.getValue(ETAIL_FIELD) || '').trim();
 
             // --- Validate ---
             var reason = validate(rma);
@@ -102,7 +104,7 @@ function (search, record, file, log) {
             // --- Back up (must succeed before we delete) ---
             var backup = snapshot(rma);
             var backupFile = file.create({
-                name: 'RMA_' + safeName(tranid) + '_' + rmaId + '_' + stamp() + '.json',
+                name: 'RMA_' + safeName(tranid) + '_' + rmaId + '_' + safeName(etailId || 'NoEtailID') + '.json',
                 fileType: file.Type.JSON,
                 contents: JSON.stringify(backup, null, 2),
                 folder: FOLDER_ID,
