@@ -4,7 +4,7 @@
  *
  * Delete RMAs that only have the TM-B-RESERVATION item (internal id 909).
  *
- * For each RMA from saved search customsearch_also_rma_for_tmbreservation:
+ * For each RMA with a TM-B-RESERVATION line at rate 50 (search built in getInputData):
  *   1. Load the RMA and check it again:
  *        - exactly 1 item line
  *        - that line is item 909
@@ -23,7 +23,6 @@ define(['N/search', 'N/record', 'N/file', 'N/log'],
 function (search, record, file, log) {
 
     // ---------- Settings ----------
-    var SEARCH_ID = 'customsearch_also_rma_for_tmbreservation';
     var ITEM_ID = '909';            // TM-B-RESERVATION
     var FOLDER_ID = 27474;          // backups + summary file
 
@@ -41,10 +40,30 @@ function (search, record, file, log) {
     // ---------- 1. Get the RMAs ----------
     function getInputData() {
         log.audit('RMA Delete - START', {
-            search: SEARCH_ID,
+            item: ITEM_ID,
             dryRun: isDryRun()
         });
-        return search.load({ id: SEARCH_ID });
+
+        // Same as the saved search, without the summary filters
+        // (count(line) / max(rate) caused INVALID_SRCH_SUMMARY_TYP).
+        // The "only 1 item line" check is done in reduce() on the loaded RMA.
+        return search.create({
+            type: search.Type.RETURN_AUTHORIZATION,
+            filters: [
+                ['type', 'anyof', 'RtnAuth'],
+                'AND', ['mainline', 'is', 'F'],
+                'AND', ['shipping', 'is', 'F'],
+                'AND', ['taxline', 'is', 'F'],
+                'AND', ['cogs', 'is', 'F'],
+                'AND', ['item.type', 'anyof', 'NonInvtPart'],
+                'AND', ['item', 'anyof', ITEM_ID],
+                'AND', ['formulanumeric: ABS(NVL({rate}, 0))', 'equalto', '50']
+            ],
+            columns: [
+                search.createColumn({ name: 'internalid' }),
+                search.createColumn({ name: 'tranid' })
+            ]
+        });
     }
 
     // ---------- 2. One key per RMA (removes duplicate search rows) ----------
