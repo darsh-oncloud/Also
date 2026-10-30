@@ -24,12 +24,12 @@ function (search, record, file, log) {
 
     // ---------- Settings ----------
     var ITEM_ID = '909';            // TM-B-RESERVATION
-    var FOLDER_ID = 27474;          // backups + summary file
+    var FOLDER_ID = 28814;          // backups + summary file
     var ETAIL_FIELD = 'custbody_celigo_etail_order_id';
 
     // true  = test run: backups + logs only, nothing is deleted
     // false = real run: RMAs are deleted
-    var DRY_RUN = true;
+    var DRY_RUN = false;
 
     var STATUS = {
         DELETED: 'DELETED',
