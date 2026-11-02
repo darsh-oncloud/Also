@@ -24,12 +24,12 @@ function (search, record, file, log) {
 
     // ---------- Settings ----------
     var ITEM_ID = '909';            // TM-B-RESERVATION
-    var FOLDER_ID = 28814;          // backups + summary file
+    var FOLDER_ID = 288;          // backups + summary file
     var ETAIL_FIELD = 'custbody_celigo_etail_order_id';
 
     // true  = test run: backups + logs only, nothing is deleted
     // false = real run: RMAs are deleted
-    var DRY_RUN = false;
+    var DRY_RUN = true;
 
     var STATUS = {
         DELETED: 'DELETED',
@@ -57,8 +57,11 @@ function (search, record, file, log) {
                 'AND', ['taxline', 'is', 'F'],
                 'AND', ['cogs', 'is', 'F'],
                 'AND', ['item.type', 'anyof', 'NonInvtPart'],
-                'AND', ['item', 'anyof', ITEM_ID],
-                'AND', ['formulanumeric: ABS(NVL({rate}, 0))', 'equalto', '50']
+                'AND', [
+                  ['item', 'anyof', ITEM_ID],
+                  'OR',
+                  ['item.parent', 'anyof', '4075', '4076']
+                ]
             ],
             columns: [
                 search.createColumn({ name: 'internalid' }),
@@ -192,10 +195,21 @@ function (search, record, file, log) {
         }
 
         var itemId = String(rma.getSublistValue({ sublistId: 'item', fieldId: 'item', line: 0 }));
-        if (itemId !== ITEM_ID) {
-            return 'Only line is item ' + itemId + ', not ' + ITEM_ID;
-        }
+        // if (itemId !== ITEM_ID) {
+        //     return 'Only line is item ' + itemId + ', not ' + ITEM_ID;
+        // }
 
+      var parent = search.lookupFields({
+    type: search.Type.ITEM,
+    id: itemId,
+    columns: ['parent']
+}).parent;
+
+var parentId = parent && parent.length ? String(parent[0].value) : '';
+
+if (itemId !== ITEM_ID && parentId !== '4075' && parentId !== '4076') {
+    return 'Item ' + itemId + ' is not an allowed reservation item';
+}
         // Related records (item receipt, credit memo, refund) - NetSuite would block the delete anyway
         try {
             var links = rma.getLineCount({ sublistId: 'links' });
