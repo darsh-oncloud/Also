@@ -84,7 +84,7 @@ function (record, search, log, https) {
     // MAIN AFTER SUBMIT
     function afterSubmit(context) {
         try {
-            if (context.type !== context.UserEventType.CREATE) return;
+            if (context.type !== context.UserEventType.EDIT) return;
 
             var fulfillment = context.newRecord;
             var fulfillmentId = fulfillment.id;
