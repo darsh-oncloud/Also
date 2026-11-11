@@ -22,7 +22,9 @@ define(['N/search', 'N/record', 'N/log'], (search, record, log) => {
         const v = result.values;
         const recId = result.id;
 
-        const sourceType = String(v.custrecord_celigo_shpf_trans_src_type || '').toLowerCase().trim();
+        // Use the "Type" field (charge / refund). Source Type for refunds is "Payments::Refund".
+        const sourceType = String(v.custrecord_celigo_shpf_payout_tran_type || v.custrecord_celigo_shpf_trans_src_type || '')
+            .toLowerCase().indexOf('refund') > -1 ? 'refund' : String(v.custrecord_celigo_shpf_payout_tran_type || '').toLowerCase().trim();
         const orderId = String(v.custrecord_celigo_shpf_tran_src_ordr_id || '').trim();
         const amount = Math.abs(parseFloat(v.custrecord_celigo_shpf_trans_var_amnt) || 0);
 
