@@ -15,7 +15,7 @@
 define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
 
     /* ===================== CONFIG ===================== */
-    const DRY_RUN = true;                 // flip to true to test without saving
+    const DRY_RUN = false;                 // flip to true to test without saving
     const REFUND_ACCOUNT = 122;            // bank/GL account the refund is paid from
     const SO_LINK_FIELD = 'custbody_pcs_netsuite_sales_order';
     const VARIANCE_LINK_FIELD = 'custrecord_related_netsuite_transaction';
