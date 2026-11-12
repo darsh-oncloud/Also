@@ -29,7 +29,7 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
 
         const result = {
             varianceRecord: rec.id,
-            wouldCreateRefund: false,
+            wouldCreateRefund: true,
             salesOrder: null,
             customerDeposit: null,
             refundAmount: null,
