@@ -455,18 +455,18 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
             filters: { CASHBACK_VARIANCE_ACCOUNT, CASHBACK_MEMO_CONTAINS }
         });
 
-        if (!cbLine) {
-            result.stoppedAt =
-                'No Cash Back line found with amount >= ' + refundAmount +
-                ' (check CASHBACK_VARIANCE_ACCOUNT / CASHBACK_MEMO_CONTAINS)';
-            return false;
-        }
+        // if (!cbLine) {
+        //     result.stoppedAt =
+        //         'No Cash Back line found with amount >= ' + refundAmount +
+        //         ' (check CASHBACK_VARIANCE_ACCOUNT / CASHBACK_MEMO_CONTAINS)';
+        //     return false;
+        // }
 
         if (matches.length > 1 && !matches.some(l => Math.abs(l.amount - refundAmount) < 0.005)) {
             result.problems.push('More than one possible Cash Back line - used line ' + cbLine.line);
         }
 
-        const newCashback = Math.round((cbLine.amount - refundAmount) * 100) / 100;
+       // const newCashback = Math.round((cbLine.amount - refundAmount) * 100) / 100;
 
         if (BANK_DEPOSIT_DRY_RUN) {
             log.audit('10. BANK DEPOSIT DRY RUN - WOULD UPDATE', {
@@ -485,11 +485,11 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
         /* --- apply changes --- */
         dep.setSublistValue({ sublistId: 'payment', fieldId: 'deposit', line: payLine, value: true });
 
-        if (newCashback < 0.005) {
-            dep.removeLine({ sublistId: 'cashback', line: cbLine.line });
-        } else {
-            dep.setSublistValue({ sublistId: 'cashback', fieldId: 'amount', line: cbLine.line, value: newCashback });
-        }
+        // if (newCashback < 0.005) {
+        //     dep.removeLine({ sublistId: 'cashback', line: cbLine.line });
+        // } else {
+        //     dep.setSublistValue({ sublistId: 'cashback', fieldId: 'amount', line: cbLine.line, value: newCashback });
+        // }
 
         dep.save({ enableSourcing: true, ignoreMandatoryFields: true });
 
@@ -504,8 +504,8 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
         log.audit('11. BANK DEPOSIT UPDATED', {
             bankDepositId,
             refundTicked: refundId,
-            cashbackBefore: cbLine.amount,
-            cashbackAfter: newCashback,
+            //cashbackBefore: cbLine.amount,
+            //cashbackAfter: newCashback,
             totalBefore,
             totalAfter
         });
