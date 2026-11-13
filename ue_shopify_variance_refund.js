@@ -256,12 +256,32 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
             result.stoppedAt = 'No Customer Deposit found on Sales Order ' + soNumber;
             return null;
         }
-        if (customerDeposits.length > 1) {
-            result.stoppedAt = 'More than one Customer Deposit found on Sales Order ' + soNumber;
-            return null;
-        }
+        // if (customerDeposits.length > 1) {
+        //     result.stoppedAt = 'More than one Customer Deposit found on Sales Order ' + soNumber;
+        //     return null;
+        // }
 
-        const customerDeposit = customerDeposits[0];
+        // const customerDeposit = customerDeposits[0];
+        let customerDeposit = customerDeposits[0];
+
+        if (customerDeposits.length > 1) {
+            // more than 1 open deposit: use the one whose amount = variance amount
+            const sameAmount = customerDeposits.filter(d =>
+                Math.abs(Math.abs(parseFloat(d.amount) || 0) - refundAmount) < 0.01
+            );
+
+            if (sameAmount.length !== 1) {
+                result.stoppedAt =
+                    'More than one Customer Deposit on Sales Order ' + soNumber +
+                    ' and ' + (sameAmount.length ? 'more than one' : 'none') +
+                    ' has amount ' + refundAmount;
+                return null;
+            }
+
+            customerDeposit = sameAmount[0];
+            log.audit('4a. MULTIPLE DEPOSITS - PICKED SAME AMOUNT', customerDeposit);
+        }
+      
         result.customerDeposit = customerDeposit;
 
       
