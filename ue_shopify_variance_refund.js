@@ -264,6 +264,34 @@ define(['N/record', 'N/search', 'N/log'], (record, search, log) => {
         const customerDeposit = customerDeposits[0];
         result.customerDeposit = customerDeposit;
 
+        /* Skip if the Customer Deposit already has any Customer Refund applied */
+        const cdRefunds = search.create({
+            type: 'customerdeposit',
+            filters: [
+                ['internalid', 'anyof', customerDeposit.id],
+                'AND',
+                ['applyingtransaction.type', 'anyof', 'CustRfnd']
+            ],
+            columns: [
+                search.createColumn({ name: 'internalid', join: 'applyingTransaction' }),
+                search.createColumn({ name: 'tranid', join: 'applyingTransaction' })
+            ]
+        }).run().getRange({ start: 0, end: 10 });
+
+        if (cdRefunds.length) {
+            const refundNumbers = cdRefunds.map(r =>
+                r.getValue({ name: 'tranid', join: 'applyingTransaction' })
+            );
+            log.audit('4b. CUSTOMER DEPOSIT ALREADY HAS A REFUND - SKIPPING', {
+                customerDeposit: customerDeposit.tranid,
+                refunds: refundNumbers
+            });
+            result.stoppedAt =
+                'Customer Deposit ' + customerDeposit.tranid +
+                ' already has a Customer Refund applied (' + refundNumbers.join(', ') + ')';
+            return null;
+        }
+      
         /* Duplicate guard */
         const candidates = [];
         const addRefundCandidates = (filters) => {
