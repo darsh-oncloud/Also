@@ -2,215 +2,326 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  *
- * Check TrackingURL in JSON files
- * Generate CSV report in same folder.
+ * Delete RMAs that only have the TM-B-RESERVATION item (internal id 909).
+ *
+ * For each RMA with a TM-B-RESERVATION line at rate 50 (search built in getInputData):
+ *   1. Load the RMA and check it again:
+ *        - exactly 1 item line
+ *        - that line is item 909
+ *        - no related transactions (receipts, credit memos, refunds)
+ *   2. Save a full backup of the RMA (all body fields + all sublists) as a
+ *      JSON file in File Cabinet folder 27474
+ *   3. Delete the RMA (only if the backup was saved)
+ * At the end, a summary CSV of everything deleted / skipped / failed is saved
+ * to the same folder, and totals are written to the log.
+ *
+ * DRY_RUN (in Settings below):
+ *   true  = test run: backups + logs only, nothing is deleted
+ *   false = real run: RMAs are deleted
  */
+define(['N/search', 'N/record', 'N/file', 'N/log'],
+function (search, record, file, log) {
 
-define(['N/search', 'N/file', 'N/log'],
-function (search, file, log) {
+    // ---------- Settings ----------
+    var ITEM_ID = '909';            // TM-B-RESERVATION
+    var FOLDER_ID = 28814;          // backups + summary file
+    var ETAIL_FIELD = 'custbody_celigo_etail_order_id';
 
-    var FOLDER_ID = 27477;
+    // true  = test run: backups + logs only, nothing is deleted
+    // false = real run: RMAs are deleted
+    var DRY_RUN = false;
 
+    var STATUS = {
+        DELETED: 'DELETED',
+        DRY_RUN: 'DRY_RUN',
+        SKIPPED: 'SKIPPED',
+        ERROR: 'ERROR'
+    };
+
+    // ---------- 1. Get the RMAs ----------
     function getInputData() {
+        log.audit('RMA Delete - START', {
+            item: ITEM_ID,
+            dryRun: isDryRun()
+        });
 
-        var files = [];
-
-        var fileSearch = search.create({
-            type: 'file',
+        // Same as the saved search, without the summary filters
+        // (count(line) / max(rate) caused INVALID_SRCH_SUMMARY_TYP).
+        // The "only 1 item line" check is done in reduce() on the loaded RMA.
+        return search.create({
+            type: search.Type.RETURN_AUTHORIZATION,
             filters: [
-                ['folder', 'anyof', FOLDER_ID]
+                ['type', 'anyof', 'RtnAuth'],
+                'AND', ['mainline', 'is', 'F'],
+                'AND', ['shipping', 'is', 'F'],
+                'AND', ['taxline', 'is', 'F'],
+                'AND', ['cogs', 'is', 'F'],
+                'AND', ['item.type', 'anyof', 'NonInvtPart'],
+                'AND', [
+                  ['item', 'anyof', ITEM_ID],
+                  'OR',
+                  ['item.parent', 'anyof', '4075', '4076']
+                ]
             ],
             columns: [
-                'internalid',
-                'name'
+                search.createColumn({ name: 'internalid' }),
+                search.createColumn({ name: 'tranid' })
             ]
         });
-
-        var pagedData = fileSearch.runPaged({
-            pageSize: 1000
-        });
-
-        pagedData.pageRanges.forEach(function (pageRange) {
-
-            var page = pagedData.fetch({
-                index: pageRange.index
-            });
-
-            page.data.forEach(function (result) {
-
-                var fileName = result.getValue('name');
-
-                // Process JSON files only
-                if (!/\.json$/i.test(fileName)) {
-                    return;
-                }
-
-                files.push({
-                    fileId: result.getValue('internalid'),
-                    fileName: fileName
-                });
-
-            });
-
-        });
-
-        log.audit('JSON Files Found', files.length);
-
-        return files;
     }
 
+    // ---------- 2. One key per RMA (removes duplicate search rows) ----------
     function map(context) {
+        var row = JSON.parse(context.value);
+        var rmaId = getRmaId(row);
 
-        var data = JSON.parse(context.value);
+        if (!rmaId) {
+            log.error('RMA Delete - No internal id in search row', context.value);
+            return;
+        }
+        context.write({ key: String(rmaId), value: '1' });
+    }
 
-        var result = {
-            fileName: data.fileName,
-            fileId: data.fileId,
-            salesOrderId: '',
-            trackingURL: '',
-            status: 'Not Found'
-        };
+    // ---------- 3. Validate, back up, delete ----------
+    function reduce(context) {
+        var rmaId = context.key;
+        var dryRun = isDryRun();
+        var tranid = '';
 
         try {
+            var rma = record.load({
+                type: record.Type.RETURN_AUTHORIZATION,
+                id: rmaId
+            });
+            tranid = String(rma.getValue('tranid') || '');
+            var etailId = String(rma.getValue(ETAIL_FIELD) || '').trim();
 
-            var jsonFile = file.load({
-                id: data.fileId
+            // --- Validate ---
+            var reason = validate(rma);
+            if (reason) {
+                log.audit('RMA SKIPPED - ' + tranid, { rmaId: rmaId, reason: reason });
+                writeResult(context, STATUS.SKIPPED, rmaId, tranid, '', reason);
+                return;
+            }
+
+            // --- Back up (must succeed before we delete) ---
+            var backup = snapshot(rma);
+            var backupFile = file.create({
+                name: 'RMA_' + safeName(tranid) + '_' + rmaId + '_' + safeName(etailId || 'NoEtailID') + '.json',
+                fileType: file.Type.JSON,
+                contents: JSON.stringify(backup, null, 2),
+                folder: FOLDER_ID,
+                description: 'Backup of RMA ' + tranid + ' before delete'
+            });
+            var fileId = backupFile.save();
+
+            // --- Delete ---
+            if (dryRun) {
+                log.audit('RMA DRY RUN (not deleted) - ' + tranid, { rmaId: rmaId, backupFileId: fileId });
+                writeResult(context, STATUS.DRY_RUN, rmaId, tranid, fileId, 'Dry run - not deleted');
+                return;
+            }
+
+            record.delete({
+                type: record.Type.RETURN_AUTHORIZATION,
+                id: rmaId
             });
 
-            var jsonData = JSON.parse(
-                jsonFile.getContents()
-            );
-
-            // Check nested payload
-            var payload = jsonData.payload || jsonData;
-
-            // Payload could be a JSON string
-            if (typeof payload === 'string') {
-                payload = JSON.parse(payload);
-            }
-
-            if (payload && typeof payload === 'object') {
-
-                result.salesOrderId =
-                    payload.salesOrderId || '';
-
-                if (
-                    payload.TrackingURL !== undefined &&
-                    payload.TrackingURL !== null &&
-                    String(payload.TrackingURL).trim() !== ''
-                ) {
-
-                    result.trackingURL = payload.TrackingURL;
-                    result.status = 'Found';
-
-                }
-
-            }
+            log.audit('RMA DELETED - ' + tranid, { rmaId: rmaId, backupFileId: fileId });
+            writeResult(context, STATUS.DELETED, rmaId, tranid, fileId, '');
 
         } catch (e) {
-
-            result.status = 'Error: ' + e.message;
-
-            log.error(
-                'JSON File Error - ' + data.fileName,
-                e.message
-            );
-
+            log.error('RMA ERROR - ' + (tranid || rmaId), { rmaId: rmaId, message: e.message });
+            writeResult(context, STATUS.ERROR, rmaId, tranid, '', e.name + ': ' + e.message);
         }
-
-        context.write({
-            key: data.fileId,
-            value: result
-        });
     }
 
+    // ---------- 4. Totals + summary file ----------
     function summarize(summary) {
 
-        var csvRows = [];
-
-        // CSV header
-        csvRows.push(
-            'File Name,File ID,Sales Order ID,TrackingURL,Status'
-        );
-
-        var total = 0;
-        var found = 0;
-        var notFound = 0;
-        var errors = 0;
-
-        summary.output.iterator().each(function (key, value) {
-
-            var row = JSON.parse(value);
-
-            csvRows.push([
-                csvValue(row.fileName),
-                csvValue(row.fileId),
-                csvValue(row.salesOrderId),
-                csvValue(row.trackingURL),
-                csvValue(row.status)
-            ].join(','));
-
-            total++;
-
-            if (row.status === 'Found') {
-                found++;
-            } else if (row.status === 'Not Found') {
-                notFound++;
-            } else {
-                errors++;
-            }
-
+        if (summary.inputSummary.error) {
+            log.error('RMA Delete - Search failed', summary.inputSummary.error);
+        }
+        summary.mapSummary.errors.iterator().each(function (key, err) {
+            log.error('RMA Delete - Map error ' + key, err);
+            return true;
+        });
+        summary.reduceSummary.errors.iterator().each(function (key, err) {
+            log.error('RMA Delete - Reduce error ' + key, err);
             return true;
         });
 
-        // Check for stage errors
-        if (summary.inputSummary.error) {
-            log.error('Input Error', summary.inputSummary.error);
-        }
+        var counts = { DELETED: 0, DRY_RUN: 0, SKIPPED: 0, ERROR: 0 };
+        var csv = ['Status,RMA Internal ID,RMA Number,Backup File ID,Reason'];
 
-        summary.mapSummary.errors.iterator().each(
-            function (key, error) {
-                log.error('Map Error - ' + key, error);
-                return true;
-            }
-        );
-
-        // Create CSV report in same folder
-        var csvFile = file.create({
-            name: 'TrackingURL_Report_' +
-                new Date().getTime() + '.csv',
-            fileType: file.Type.CSV,
-            contents: csvRows.join('\n'),
-            folder: FOLDER_ID
+        summary.output.iterator().each(function (status, value) {
+            var r = JSON.parse(value);
+            counts[status] = (counts[status] || 0) + 1;
+            csv.push([status, r.rmaId, r.tranid, r.fileId, r.reason].map(csvCell).join(','));
+            return true;
         });
 
-        var csvFileId = csvFile.save();
+        var summaryFileId = '';
+        try {
+            summaryFileId = file.create({
+                name: 'RMA_Delete_Summary_' + stamp() + '.csv',
+                fileType: file.Type.CSV,
+                contents: csv.join('\n'),
+                folder: FOLDER_ID
+            }).save();
+        } catch (e) {
+            log.error('RMA Delete - Summary file not saved', e.message);
+        }
 
-        log.audit('TrackingURL Report Created', {
-            csvFileId: csvFileId,
-            folderId: FOLDER_ID,
-            totalFiles: total,
-            trackingURLFound: found,
-            trackingURLNotFound: notFound,
-            errors: errors
+        log.audit('RMA Delete - END', {
+            dryRun: isDryRun(),
+            deleted: counts.DELETED,
+            dryRunWouldDelete: counts.DRY_RUN,
+            skipped: counts.SKIPPED,
+            errors: counts.ERROR,
+            summaryFileId: summaryFileId,
+            usage: summary.usage,
+            seconds: summary.seconds
         });
     }
 
-    function csvValue(value) {
+    // ---------- Validation ----------
+    // Returns a reason to skip, or '' if the RMA is OK to delete
+    function validate(rma) {
+        var lineCount = rma.getLineCount({ sublistId: 'item' });
 
-        if (value === null || value === undefined) {
-            value = '';
+        if (lineCount !== 1) {
+            return 'RMA has ' + lineCount + ' item lines (only 1 allowed)';
         }
 
-        return '"' +
-            String(value).replace(/"/g, '""') +
-            '"';
+        var itemId = String(rma.getSublistValue({ sublistId: 'item', fieldId: 'item', line: 0 }));
+        // if (itemId !== ITEM_ID) {
+        //     return 'Only line is item ' + itemId + ', not ' + ITEM_ID;
+        // }
+
+      var parent = search.lookupFields({
+    type: search.Type.ITEM,
+    id: itemId,
+    columns: ['parent']
+}).parent;
+
+var parentId = parent && parent.length ? String(parent[0].value) : '';
+
+if (itemId !== ITEM_ID && parentId !== '4075' && parentId !== '4076') {
+    return 'Item ' + itemId + ' is not an allowed reservation item';
+}
+        // Related records (item receipt, credit memo, refund) - NetSuite would block the delete anyway
+        try {
+            var links = rma.getLineCount({ sublistId: 'links' });
+            if (links > 0) return 'RMA has ' + links + ' related transaction(s)';
+        } catch (e) { /* links sublist not available - delete will fail safely if blocked */ }
+
+        return '';
+    }
+
+    // ---------- Backup ----------
+    // Every body field and every sublist line, with value + display text
+    function snapshot(rec) {
+        var data = {
+            backupDate: new Date().toISOString(),
+            recordType: rec.type,
+            internalId: rec.id,
+            body: {},
+            sublists: {}
+        };
+
+        rec.getFields().forEach(function (f) {
+            data.body[f] = readField(rec, f);
+        });
+
+        rec.getSublists().forEach(function (s) {
+            var lines = [];
+            var count = 0;
+            try { count = rec.getLineCount({ sublistId: s }); } catch (e) { return; }
+            if (count <= 0) return;
+
+            var fields = [];
+            try { fields = rec.getSublistFields({ sublistId: s }); } catch (e2) { return; }
+
+            for (var i = 0; i < count; i++) {
+                var line = {};
+                fields.forEach(function (f) {
+                    line[f] = readSublistField(rec, s, f, i);
+                });
+                lines.push(line);
+            }
+            data.sublists[s] = lines;
+        });
+
+        return data;
+    }
+
+    function readField(rec, f) {
+        var v = null, t = null;
+        try { v = rec.getValue(f); } catch (e) { /* skip */ }
+        try { t = rec.getText(f); } catch (e2) { /* skip */ }
+        return pack(v, t);
+    }
+
+    function readSublistField(rec, s, f, i) {
+        var v = null, t = null;
+        try { v = rec.getSublistValue({ sublistId: s, fieldId: f, line: i }); } catch (e) { /* skip */ }
+        try { t = rec.getSublistText({ sublistId: s, fieldId: f, line: i }); } catch (e2) { /* skip */ }
+        return pack(v, t);
+    }
+
+    // Keep the file small: only store text when it differs from the value
+    function pack(v, t) {
+        if (t !== null && t !== undefined && String(t) !== String(v)) {
+            return { value: v, text: t };
+        }
+        return v;
+    }
+
+    // ---------- Helpers ----------
+    function isDryRun() {
+        return DRY_RUN === true;
+    }
+
+    // Works for normal and summary (grouped) saved searches
+    function getRmaId(row) {
+        if (row.id) return row.id;
+        var vals = row.values || {};
+        var v = vals.internalid || vals['GROUP(internalid)'];
+        if (Array.isArray(v)) v = v[0];
+        if (v && typeof v === 'object') return v.value;
+        return v || '';
+    }
+
+    function writeResult(context, status, rmaId, tranid, fileId, reason) {
+        context.write({
+            key: status,
+            value: JSON.stringify({
+                rmaId: rmaId,
+                tranid: tranid,
+                fileId: fileId ? String(fileId) : '',
+                reason: reason || ''
+            })
+        });
+    }
+
+    function stamp() {
+        return new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '');
+    }
+
+    function safeName(s) {
+        return String(s || 'NoNumber').replace(/[^A-Za-z0-9_-]/g, '_');
+    }
+
+    function csvCell(v) {
+        var s = String(v === null || v === undefined ? '' : v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     }
 
     return {
         getInputData: getInputData,
         map: map,
+        reduce: reduce,
         summarize: summarize
     };
-
 });
